@@ -1,0 +1,37 @@
+model:
+  contamination: 0.05
+  random_state: 42
+
+threshold:
+  anomaly_score: -0.45
+
+feature:
+  window_size: 1min
+
+paths:
+  snort_config: snort.lua
+  snort_rules: local.rules
+  log_dir: logs
+  alert_file: logs/alert.json
+
+  raw_log_dir: data/raw_logs
+  processed_data: data/processed/processed_logs.csv
+  model_path: models/isolation_forest.joblib
+  scaler_path: models/scaler.joblib
+  anomalies_output: logs/anomalies.json
+  detection_results_output: logs/detection_results.json
+  monitor_state: logs/monitor_state.json
+
+siem:
+  db_path: data/siem.db
+  index_schema: src/siem/index_schema.json
+  retention_days: 30
+  correlation:
+    window_minutes: 2
+    high_severity_threshold: 5
+    medium_severity_threshold: 3
+
+threat_intel:
+  nvd_base_url: https://services.nvd.nist.gov/rest/json/cves/2.0
+  enable_api: false # Set true if real API access needed (slower)
+

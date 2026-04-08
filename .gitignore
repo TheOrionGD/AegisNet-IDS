@@ -1,0 +1,99 @@
+# IDEAL .gitignore for Cyber Network Security (CNS) SIEM Project
+
+# --- System & Editors ---
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.bak
+*~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- Python / Backend ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+bin/
+lib/
+include/
+local/
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- Node.js / Frontend ---
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+# Vite/Build output
+dist/
+dist-ssr/
+**/dist/
+**/dist-ssr/
+.vercel
+.turbo
+
+# --- Secret / Environment Variables ---
+.env
+.env.local
+.env.*.local
+*.local
+*.pem
+*.key
+
+# --- Logs ---
+*.log
+logs/
+**/logs/
+install_snort.log
+pytest_output.txt
+
+# --- Database & Data ---
+*.db
+*.sqlite
+*.sqlite3
+data/siem.db
+data/raw_logs/
+data/processed/
+demo_data/
+demo_output/
+generated_rules_metadata.json
+
+# --- Machine Learning Models ---
+models/*.joblib
+models/*.pkl
+models/*.h5
+models/*.onnx
+models/*.pt
+models/*.pth
+
+# --- Snort & Build Artifacts ---
+generated_rules.rules
+local.rules.bak
+/build_snort3/
+/daq-2.0.7/
+/snort-3.1.0.0/
+# Ignore build directories often created by shell scripts
+**/build/
+**/_build/

@@ -1,0 +1,516 @@
+# Custom Snort 3 Rules for Enhanced Network Anomaly and Zero-Day Detection
+# These rules provide detection for common attack patterns and suspicious network behavior
+# Rules are organized by category for easy management and understanding
+
+# =====================================================================
+# CATEGORY 1: RECONNAISSANCE AND SCANNING DETECTION
+# =====================================================================
+
+# Rule 1001: Fast Port Scan Detection
+# Detects when a single source initiates connections to >20 unique destination ports within 10 seconds
+alert tcp any any -> $HOME_NET any (
+    msg:"Port Scan Detected - Multiple Ports from Single Source";
+    detection_filter:track by_src, count 20, seconds 10;
+    flow:stateless;
+    sid:1000001;
+    rev:2;
+    classtype:attempted-recon;
+    priority:1;
+)
+
+# Rule 1002: Incremental Port Scan Detection
+# Detects sequential port scanning activity (slower, more stealthy port scans)
+alert tcp any any -> $HOME_NET any (
+    msg:"Sequential Port Scan Detected - Incremental Ports";
+    flow:stateless;
+    detection_filter:track by_src, count 15, seconds 30;
+    sid:1000002;
+    rev:1;
+    classtype:attempted-recon;
+    priority:2;
+)
+
+# Rule 1003: SYN Scan Detection
+# Detects potential SYN-based port scans (low-flag packets)
+alert tcp any any -> $HOME_NET any (
+    msg:"SYN Scan Detected - Reconnaissance Activity";
+    flags:S;
+    threshold:type threshold, track by_src, count 25, seconds 60;
+    sid:1000003;
+    rev:1;
+    classtype:attempted-recon;
+    priority:2;
+)
+
+# Rule 1004: Vertical Scanning Detection
+# Detects scanning of multiple ports on same destination
+alert tcp any any -> any any (
+    msg:"Vertical Scan Detected - Sequential Port Probing";
+    detection_filter:track by_src, count 30, seconds 15;
+    flow:stateless;
+    sid:1000004;
+    rev:1;
+    classtype:attempted-recon;
+    priority:2;
+)
+
+# =====================================================================
+# CATEGORY 2: HTTP ANOMALIES AND SUSPICIOUS WEB REQUESTS
+# =====================================================================
+
+# Rule 2001: Suspicious POST Request with Encoded Payload
+# Detects HTTP POST requests with URL-encoded or suspicious payload patterns
+alert http any any -> any any (
+    msg:"HTTP Anomaly - Encoded POST Payload Detected";
+    flow:established,to_server;
+    http_method;
+    content:"POST";
+    http_header:"Content-Type";
+    pcre:"/application\/x-www-form-urlencoded|multipart\/form-data/i";
+    content:"%";
+    sid:2000001;
+    rev:2;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# Rule 2002: Large HTTP POST Request
+# Detects abnormally large POST requests that may indicate data exfiltration
+alert http any any -> any any (
+    msg:"HTTP Anomaly - Large POST Request Detected";
+    flow:established,to_server;
+    http_method;
+    content:"POST";
+    dsize:>10000;
+    sid:2000002;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:3;
+)
+
+# Rule 2003: Known SQL Injection Attempt
+# Detects common SQL injection patterns in HTTP requests
+alert http any any -> any any (
+    msg:"HTTP Attack - SQL Injection Detected";
+    flow:established,to_server;
+    content:"union";
+    nocase;
+    pcre:"/union.*select|select.*from|insert.*into|drop.*table|update.*set/i";
+    http_client_body;
+    sid:2000003;
+    rev:1;
+    classtype:attempted-admin;
+    priority:1;
+)
+
+# Rule 2004: XML External Entity (XXE) Attack
+# Detects potential XXE attacks in HTTP requests
+alert http any any -> any any (
+    msg:"HTTP Attack - XXE Injection Detected";
+    content:"<!ENTITY";
+    http_client_body;
+    pcre:"<!ENTITY.*SYSTEM.*file:\/\/|<!ENTITY.*SYSTEM.*http:/i";
+    sid:2000004;
+    rev:1;
+    classtype:attempted-admin;
+    priority:1;
+)
+
+# Rule 2005: Directory Traversal Attempt
+# Detects common directory traversal patterns
+alert http any any -> any any (
+    msg:"HTTP Attack - Directory Traversal Detected";
+    flow:established,to_server;
+    content:"../";
+    http_uri;
+    sid:2000005;
+    rev:1;
+    classtype:attempted-recon;
+    priority:2;
+)
+
+# Rule 2006: Remote Code Execution Attempt
+# Detects suspicious command injection patterns
+alert http any any -> any any (
+    msg:"HTTP Attack - Remote Code Execution Attempt";
+    flow:established,to_server;
+    content:"|";
+    http_client_body;
+    pcre:"[\s\t;|&`(){}\[\]]*(cat|ls|cmd|powershell|bash|sh|exec|system)/i";
+    sid:2000006;
+    rev:1;
+    classtype:attempted-admin;
+    priority:1;
+)
+
+# Rule 2007: Suspicious User-Agent String
+# Detects potentially malicious or unusual User-Agent headers
+alert http any any -> any any (
+    msg:"HTTP Anomaly - Suspicious User-Agent Detected";
+    flow:established,to_server;
+    http_header;
+    content:"User-Agent|3a|";
+    pcre:"/User-Agent\s*:\s*(Python|curl|wget|Perl|sqlmap|nikto|masscan)[^\/\d]|User-Agent\s*:\s*\.\./i";
+    sid:2000007;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:3;
+)
+
+# Rule 2008: HTTP Request Methods Anomaly
+# Detects use of dangerous HTTP methods
+alert http any any -> any any (
+    msg:"HTTP Anomaly - Uncommon HTTP Method Used";
+    http_method;
+    content:"TRACE|DELETE|CONNECT";
+    nocase;
+    flow:established,to_server;
+    sid:2000008;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:3;
+)
+
+# =====================================================================
+# CATEGORY 3: TRAFFIC THRESHOLD AND DENIAL OF SERVICE DETECTION
+# =====================================================================
+
+# Rule 3001: High Connection Rate Threshold
+# Detects high volume connection attempts from a single source (potential DoS)
+alert tcp any any -> any any (
+    msg:"Traffic Threshold Exceeded - High Connection Rate Detected";
+    threshold:type threshold, track by_src, count 50, seconds 60;
+    flow:established;
+    sid:3000001;
+    rev:2;
+    classtype:attempted-dos;
+    priority:1;
+)
+
+# Rule 3002: HTTP Flood Detection
+# Detects abnormal HTTP request rates from single source
+alert http any any -> any any (
+    msg:"Traffic Anomaly - HTTP Flood Detected";
+    threshold:type threshold, track by_src, count 100, seconds 30;
+    flow:established,to_server;
+    sid:3000002;
+    rev:1;
+    classtype:attempted-dos;
+    priority:1;
+)
+
+# Rule 3003: Packet Flood Threshold
+# Detects excessive packet volume from single source within time window
+alert tcp any any -> any any (
+    msg:"Traffic Threshold - Packet Flood Detected";
+    threshold:type limit, track by_src, count 1000, seconds 60;
+    flow:established;
+    sid:3000003;
+    rev:1;
+    classtype:attempted-dos;
+    priority:2;
+)
+
+# Rule 3004: connection_limit - Detects excessive connection attempts
+alert tcp $HOME_NET any -> any any (
+    msg:"Traffic Anomaly - Excessive Connection Attempts";
+    threshold:type threshold, track by_src, count 75, seconds 120;
+    flow:established;
+    sid:3000004;
+    rev:1;
+    classtype:attempted-dos;
+    priority:2;
+)
+
+# Rule 3005: Slow DoS Detection
+# Detects slow, sustained denial of service attacks
+alert tcp any any -> $HOME_NET any (
+    msg:"Traffic Threshold - Slow DoS Pattern Detected";
+    threshold:type threshold, track by_src, count 10, seconds 300;
+    flow:established;
+    dsize:>100;
+    sid:3000005;
+    rev:1;
+    classtype:attempted-dos;
+    priority:2;
+)
+
+# =====================================================================
+# CATEGORY 4: DNS ANOMALY AND C2/BEACON DETECTION
+# =====================================================================
+
+# Rule 4001: Suspicious DNS Query - Long Domain Name
+# Detects unusually long domain names that may indicate data exfiltration or C2
+alert dns any any <> any 53 (
+    msg:"DNS Anomaly - Extremely Long Domain Name Detected";
+    dns_query;
+    pcre:"/[a-z0-9\-]{100,}/i";
+    sid:4000001;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# Rule 4002: C2 Beacon Detection - Regular DNS Queries
+# Detects regular DNS queries that may indicate beaconing
+alert dns any any <> any 53 (
+    msg:"DNS Anomaly - Potential C2 Beacon Pattern";
+    threshold:type threshold, track by_src, count 20, seconds 300;
+    flow:established;
+    sid:4000002;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# Rule 4003: DNS Tunneling Attempt
+# Detects potential DNS tunneling for covert data exfiltration
+alert dns any any <> any 53 (
+    msg:"DNS Attack - DNS Tunneling Suspected";
+    dns_query;
+    pcre:"/[0-9a-f]{32,}|[^.]{50,}/i";
+    sid:4000003;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# Rule 4004: DNS Query Flood
+# Detects abnormal volume of DNS queries from single source
+alert dns any any -> any 53 (
+    msg:"DNS Anomaly - Query Flood Detected";
+    threshold:type threshold, track by_src, count 30, seconds 60;
+    flow:established;
+    sid:4000004;
+    rev:1;
+    classtype:attempted-dos;
+    priority:2;
+)
+
+# Rule 4005: DNS Response Anomaly
+# Detects suspicious DNS response patterns
+alert dns any 53 <> any any (
+    msg:"DNS Anomaly - Suspicious Response Pattern";
+    flow:established,to_client;
+    dsize:>1000;
+    sid:4000005;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:3;
+)
+
+# =====================================================================
+# CATEGORY 5: PROTOCOL ANOMALIES AND SUSPICIOUS PATTERNS
+# =====================================================================
+
+# Rule 5001: ICMP Flood Detected
+# Detects excessive ICMP traffic that may indicate ping flood
+alert icmp any any -> any any (
+    msg:"Protocol Anomaly - ICMP Flood Detected";
+    threshold:type threshold, track by_src, count 100, seconds 60;
+    sid:5000001;
+    rev:1;
+    classtype:attempted-dos;
+    priority:2;
+)
+
+# Rule 5002: Fragmented IP Packets
+# Detects unusual fragmentation patterns
+alert ip any any -> any any (
+    msg:"Protocol Anomaly - Abnormal IP Fragmentation";
+    fragbits:M,D,R,+;
+    threshold:type threshold, track by_src, count 50, seconds 60;
+    sid:5000002;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# Rule 5003: Suspicious Zero TTL Packets
+# Detects packets with TTL=0 which may indicate traceroute or reconnaissance
+alert tcp any any -> any any (
+    msg:"Protocol Anomaly - Zero TTL Packet Detected";
+    ttl:0;
+    sid:5000003;
+    rev:1;
+    classtype:attempted-recon;
+    priority:3;
+)
+
+# Rule 5004: Null Packet Detection
+# Detects packets with no flags set (TCP null scans)
+alert tcp any any -> any any (
+    msg:"Protocol Anomaly - Null Scan Detected";
+    flags:!S,!A,!F,!R,!P,!U,!E,!C;
+    flow:stateless;
+    sid:5000004;
+    rev:1;
+    classtype:attempted-recon;
+    priority:2;
+)
+
+# Rule 5005: Xmas Scan Detection
+# Detects Christmas tree (Xmas) scans
+alert tcp any any -> any any (
+    msg:"Protocol Anomaly - Xmas Scan Detected";
+    flags:F,P,U;
+    flow:stateless;
+    sid:5000005;
+    rev:1;
+    classtype:attempted-recon;
+    priority:2;
+)
+
+# =====================================================================
+# CATEGORY 6: DATA EXFILTRATION DETECTION
+# =====================================================================
+
+# Rule 6001: Large Outbound Transfer
+# Detects abnormally large data transfers to external networks
+alert tcp $HOME_NET any -> !$HOME_NET any (
+    msg:"Data Exfiltration - Large Outbound Transfer Detected";
+    flow:established,to_server;
+    threshold:type threshold, track by_src, count 5, seconds 300;
+    dsize:>5000;
+    sid:6000001;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# Rule 6002: Suspicious Outbound Ports
+# Detects outbound connections to uncommon/suspicious ports
+alert tcp $HOME_NET any -> !$HOME_NET any (
+    msg:"Data Exfiltration - Unusual Outbound Port Used";
+    flow:established,to_server;
+    content:!"|80|";
+    content:!"|443|";
+    content:!"|25|";
+    content:!"|53|";
+    content:!"|587|";
+    content:!"|110|";
+    threshold:type threshold, track by_src, count 10, seconds 300;
+    sid:6000002;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:3;
+)
+
+# Rule 6003: SSH Brute Force Attempt
+# Detects multiple failed SSH connection attempts
+alert tcp any any -> any 22 (
+    msg:"Brute Force Attack - SSH Multiple Failed Logins";
+    threshold:type threshold, track by_src, count 5, seconds 60;
+    flow:established;
+    sid:6000003;
+    rev:1;
+    classtype:attempted-admin;
+    priority:2;
+)
+
+# =====================================================================
+# CATEGORY 7: MALWARE COMMUNICATION AND C2 PATTERNS
+# =====================================================================
+
+# Rule 7001: Suspicious Port Combinations
+# Detects connections to suspicious port combinations often used by malware
+alert tcp any any -> any [4444,5555,6666,7777] (
+    msg:"Malware Communication - Suspicious Port Combination";
+    threshold:type threshold, track by_src, count 3, seconds 300;
+    sid:7000001;
+    rev:2;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+
+# Rule 7002: Potential Botnet Activity
+# Detects patterns consistent with botnet C2 communication
+alert tcp $HOME_NET any -> !$HOME_NET any (
+    msg:"Botnet Potential - Suspicious Outbound Connection Pattern";
+    threshold:type threshold, track by_src, count 20, seconds 60;
+    flow:established;
+    sid:7000002;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# =====================================================================
+# CATEGORY 8: ZERO-DAY AND EXPLOIT DETECTION
+# =====================================================================
+
+# Rule 8001: Suspicious Shellcode Detection
+# Detects common shellcode patterns
+alert tcp any any -> any any (
+    msg:"Exploit Detection - Potential Shellcode Pattern";
+    content:"x90|x90|x90";
+    sid:8000001;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:1;
+)
+
+# Rule 8002: Buffer Overflow Signature
+# Detects basic buffer overflow patterns
+alert tcp any any -> any any (
+    msg:"Exploit Detection - Potential Buffer Overflow";
+    content:"AAA|";
+    pcre:"/AAA{10,}/";
+    sid:8000002;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# Rule 8003: Return-Oriented Programming (ROP) Pattern
+# Detects ROP gadget sequences
+alert tcp any any -> any any (
+    msg:"Exploit Detection - Possible ROP Attack";
+    content:"|c3|";
+    threshold:type threshold, track by_dst, count 50, seconds 60;
+    sid:8000003;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# =====================================================================
+# CATEGORY 9: GENERIC ANOMALY RULES FOR ZERO-DAY DETECTION
+# =====================================================================
+
+# Rule 9001: Unusual Protocol on Non-Standard Port
+# Detects HTTP-like traffic on non-HTTP ports
+alert tcp any any -> any !80 !8080 !443 !8443 (
+    msg:"Anomaly - HTTP Traffic on Non-Standard Port";
+    flow:established;
+    content:"HTTP/";
+    sid:9000001;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:3;
+)
+
+# Rule 9002: Binary Payload in HTTP Request
+# Detects binary data in HTTP requests (potential encoded exploit)
+alert http any any -> any any (
+    msg:"Anomaly - Binary Content in HTTP Request";
+    content:"!|20|(!|21|-|7E|)";
+    http_client_body;
+    threshold:type threshold, track by_src, count 3, seconds 300;
+    sid:9000002;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:2;
+)
+
+# Rule 9003: Non-ASCII Characters in Protocol Headers
+# Detects unusual character encoding
+alert tcp any any -> any any (
+    msg:"Anomaly - Invalid/Non-ASCII in Protocol Headers";
+    content:"!|20-7E|";
+    sid:9000003;
+    rev:1;
+    classtype:suspicious-traffic;
+    priority:3;
+)

@@ -1,0 +1,30 @@
+{
+  "logs": {
+    "type": "object",
+    "properties": {
+      "id": { "type": "string" },
+      "timestamp": { "type": "string", "format": "date-time" },
+      "src_ip": { "type": "string" },
+      "dst_ip": { "type": "string" },
+      "protocol": { "type": "string" },
+      "alert_type": { "type": "string" },
+      "severity": { "type": "string" },
+      "signature_id": { "type": "integer" },
+      "raw_payload": { "type": "string" }
+    }
+  },
+  "incidents": {
+    "type": "object",
+    "properties": {
+      "incident_id": { "type": "string" },
+      "src_ip": { "type": "string" },
+      "alert_count": { "type": "integer" },
+      "severity": { "type": "string" },
+      "attack_pattern": { "type": "array", "items": { "type": "string" } },
+      "start_time": { "type": "string", "format": "date-time" },
+      "end_time": { "type": "string", "format": "date-time" },
+      "cve_match": { "type": "string" },
+      "known_exploit": { "type": "boolean" }
+    }
+  }
+}
