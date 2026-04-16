@@ -1,0 +1,52 @@
+from typing import List, Dict, Any, Optional
+from ..models.security_event import SecurityEvent
+from ..repositories.base_repo import BaseRepository
+import json
+
+class AlertService:
+    def __init__(self, repository: BaseRepository):
+        self.repository = repository
+
+    def get_normalized_alerts(self, limit: int = 100) -> List[SecurityEvent]:
+        raw_alerts = self.repository.get_alerts(limit=limit)
+        normalized = []
+        for alert in raw_alerts:
+            # Map raw_logs to SecurityEvent
+            # alert keys: id, timestamp, src_ip, dst_ip, src_port, dst_port, protocol, alert_type, severity, signature_id, raw_payload
+            
+            ml_score = 0.0
+            if alert.get('alert_type') == 'ML_ANOMALY' and alert.get('raw_payload'):
+                try:
+                    p = json.loads(alert.get('raw_payload'))
+                    ml_score = float(p.get("anomaly_score", 0.0))
+                except:
+                    pass
+
+            normalized.append(SecurityEvent(
+                id=alert.get('id', ''),
+                timestamp=alert.get('timestamp', ''),
+                source="IDS" if alert.get('alert_type') != 'ML_ANOMALY' else "ML_ENGINE",
+                type=alert.get('alert_type', 'UNKNOWN'),
+                severity=alert.get('severity', 'LOW'),
+                src_ip=alert.get('src_ip'),
+                dst_ip=alert.get('dst_ip'),
+                protocol=alert.get('protocol'),
+                message=f"Alert {alert.get('alert_type')} from {alert.get('src_ip')}",
+                ml_score=ml_score,
+                correlation_score=0.0, # Placeholder
+                raw_payload=json.loads(alert.get('raw_payload', '{}')) if alert.get('raw_payload') else {}
+            ))
+        return normalized
+
+    def get_top_ips(self, limit: int = 10) -> List[Dict[str, Any]]:
+        return self.repository.get_top_ips(limit=limit)
+
+    def get_timeline(self, hours: int = 24) -> List[Dict[str, Any]]:
+        return self.repository.get_timeline(hours=hours)
+
+    def ingest_alert(self, alert_data: Dict[str, Any]) -> str:
+        """
+        Manually ingest an alert (used by internal services). 
+        The active detection pipeline is now handled via the Event Bus + AnalysisWorker.
+        """
+        return self.repository.ingest_log(alert_data)

@@ -9,8 +9,8 @@ feature:
   window_size: 1min
 
 paths:
-  snort_config: snort.lua
-  snort_rules: local.rules
+  snort_config: config/snort/snort.lua
+  snort_rules: config/snort/local.rules
   log_dir: logs
   alert_file: logs/alert.json
 
@@ -22,16 +22,59 @@ paths:
   detection_results_output: logs/detection_results.json
   monitor_state: logs/monitor_state.json
 
+# Database Configuration
+database:
+  url: sqlite:///data/siem.db
+
+# SIEM Tactical Correlation
 siem:
   db_path: data/siem.db
-  index_schema: src/siem/index_schema.json
-  retention_days: 30
+  index_schema: back-end/siem/index_schema.json
+  retention_days: 90
   correlation:
-    window_minutes: 2
+    window_minutes: 5
     high_severity_threshold: 5
     medium_severity_threshold: 3
 
+# SOAR Response Orchestration
+soar:
+  safe_mode: true      # If true, log only. No system commands execution.
+  execute: false      # If false, global kill switch for SOAR actions.
+  confidence_threshold: 0.75
+
+# Distributed Infrastructure
+bus:
+  redis_url: "redis://localhost:6379"
+  max_local_queue: 10000
+
+# Threat Intel Feedback
 threat_intel:
   nvd_base_url: https://services.nvd.nist.gov/rest/json/cves/2.0
-  enable_api: false # Set true if real API access needed (slower)
+  enable_api: false
+
+# Security Configuration
+security:
+  secret_key: "change-this-in-production"
+  jwt_secret_key: "change-this-jwt-key-in-production"
+  jwt_expiration_hours: 24
+  bcrypt_rounds: 12
+
+# Environment
+environment: development  # production, staging, development
+
+# Virtualization Infrastructure
+virtualization:
+  hypervisor: vmware        # Options: vmware, hyper-v, virtualbox, physical
+  platform: windows-11
+  network:
+    interface_type: vmnet   # Example: vmxnet3, e1000, vmnet
+    promiscuous_mode: true
+    adapter_name: "VMware Network Adapter VMnet8"
+
+# Logging
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: logs/cns.log
+
 

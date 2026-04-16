@@ -1,0 +1,243 @@
+# AegisNet SIEM — Master Deployment Profile
+# 
+# PROFILES:
+# - `infra`: Use this to start only the required backend databases and event buses (Postgres, Redis, Kafka, ELK), 
+#            allowing you to run python `run_system.py` natively on your machine for development.
+#            Command: docker compose --profile infra up -d
+#
+# - `core`:  Use this to run the Python workers, API, and Frontend fully containerized.
+#            Command: docker compose --profile core up -d
+#
+# - `all`:   To boot the completely isolated SIEM stack with NO native dependencies.
+#            Command: docker compose --profile infra --profile core up -d
+
+
+
+x-common-env: &common-env
+  DATABASE_URL: ${DATABASE_URL:-postgresql://cns_user:OrionGD@postgres:5432/cns_siem}
+  ELASTICSEARCH_URL: http://elasticsearch:9200
+  REDIS_URL: redis://redis:6379
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  SECRET_KEY: ${SECRET_KEY:-change_this_to_a_secure_long_string_in_production}
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change_this_jwt_secret_in_production}
+  ENVIRONMENT: production
+
+services:
+  # ==========================================
+  # INFRASTRUCTURE PROFILE (Databases & Buses)
+  # ==========================================
+  
+  postgres:
+    profiles: ["infra"]
+    image: postgres:15-alpine
+    container_name: cns-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cns_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-OrionGD}
+      POSTGRES_DB: cns_siem
+    ports:
+      - "5432:5432" # Allows native Windows python scripts to connect
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - cns-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cns_user -d cns_siem"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    profiles: ["infra"]
+    image: redis:7-alpine
+    container_name: cns-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - cns-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    profiles: ["infra"]
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: cns-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.ml.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - cns-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  zookeeper:
+    profiles: ["infra"]
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: cns-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - cns-network
+
+  kafka:
+    profiles: ["infra"]
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: cns-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - cns-network
+
+  logstash:
+    profiles: ["infra"]
+    image: docker.elastic.co/logstash/logstash:8.10.2
+    container_name: cns-logstash
+    restart: unless-stopped
+    volumes:
+      - ./docker/logstash/pipeline:/usr/share/logstash/pipeline:ro
+    depends_on:
+      - elasticsearch
+      - kafka
+    networks:
+      - cns-network
+
+  kibana:
+    profiles: ["infra"]
+    image: docker.elastic.co/kibana/kibana:8.10.2
+    container_name: cns-kibana
+    restart: unless-stopped
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - cns-network
+
+  # ==========================================
+  # CORE APPLICATION PROFILE (Python & React)
+  # ==========================================
+
+  api:
+    profiles: ["core"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: cns-api
+    restart: unless-stopped
+    command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "2345"]
+    environment:
+      <<: *common-env
+    ports:
+      - "2345:2345"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - cns-network
+
+  analysis-worker:
+    profiles: ["core"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: cns-analysis
+    restart: unless-stopped
+    command: ["python", "core/analysis_worker.py"]
+    environment:
+      <<: *common-env
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    networks:
+      - cns-network
+
+  soar-worker:
+    profiles: ["core"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: cns-soar
+    restart: unless-stopped
+    command: ["python", "core/soar_worker.py"]
+    cap_add:
+      - NET_ADMIN
+    environment:
+      <<: *common-env
+      SAFE_MODE: ${SOAR_SAFE_MODE:-true}
+    volumes:
+      - ./data:/app/data
+    networks:
+      - cns-network
+
+  snort-bridge:
+    profiles: ["core"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: cns-snort-bridge
+    restart: unless-stopped
+    command: ["python", "core/snort_bridge.py", "http://api:2345", "/app/logs/alert.json"]
+    environment:
+      <<: *common-env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - cns-network
+
+  frontend:
+    profiles: ["core"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: cns-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    networks:
+      - cns-network
+
+networks:
+  cns-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  es_data:
