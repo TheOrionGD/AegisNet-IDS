@@ -68,7 +68,7 @@ async def verify_infrastructure(max_retries=3, delay=1):
 
     try:
         storage = SIEMStorage()
-        logger.info(f"[STARTUP] Storage System initialized in {storage._es_mode} mode.")
+        logger.info(f"[STARTUP] Storage System initialized.")
     except Exception as e:
         logger.error(f"[STARTUP] Storage System failure: {e}")
 
@@ -243,5 +243,5 @@ if __name__ == "__main__":
     import logging
 
     logging.basicConfig(level=logging.INFO)
-    port = int(os.environ.get("API_PORT", 2345))
+    port = int(os.environ.get("API_PORT", 2346))
     uvicorn.run(app, host="0.0.0.0", port=port)

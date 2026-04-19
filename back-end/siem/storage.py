@@ -39,11 +39,10 @@ class SIEMStorage:
     def __init__(self, mongo_url: str = None, db_name: str = None):
         self.config = load_config()
         self.mongo_url = mongo_url or MONGODB_URL
-        self.db_name = db_name or DATABASE_NAME
-        self.client: AsyncIOMotorClient = None
-        self.db = None
-        self._connected = False
-        self._connect()
+        self.db_name = db_name or "aegisnet"
+        self.client: AsyncIOMotorClient = AsyncIOMotorClient(self.mongo_url)
+        self.db = self.client["aegisnet"]
+        self._connected = True
 
     def _connect(self):
         """Establish MongoDB connection."""

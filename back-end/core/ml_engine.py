@@ -3,12 +3,15 @@ import numpy as np
 import pandas as pd
 import datetime
 from datetime import timezone
+from pathlib import Path
 from typing import Dict, Any, Optional
 from ml_services.model import AnomalyModel
 from ml_services.feature_engineering import FeatureEngineer
 from config_loader import load_config
 
 logger = logging.getLogger(__name__)
+
+_MODELS_PATH = Path(__file__).resolve().parents[2] / "models"
 
 
 class MLEngine:
@@ -20,19 +23,23 @@ class MLEngine:
     def __init__(self, config_path: str = "config/config.yaml"):
         self.config = load_config(config_path)
         self.model = AnomalyModel()
-        scaler_path = self.config["paths"].get("scaler_path")
+        scaler_path = str(_MODELS_PATH / "scaler.joblib")
         self.engineer = FeatureEngineer(window_size="1min", scaler_path=scaler_path)
         self.initialized = False
         self._load_model()
 
     def _load_model(self):
         try:
-            model_path = self.config["paths"].get(
-                "model_path", "models/anomaly_model.joblib"
+            model_path = (
+                Path(__file__).resolve().parents[2]
+                / "models"
+                / "isolation_forest.joblib"
             )
-            self.model.load_model(model_path)
+            self.model.load_model(str(model_path))
             self.initialized = True
-            logger.info("ML Engine successfully initialized with pre-trained model.")
+            logger.info(
+                f"ML Engine successfully initialized with pre-trained model: {model_path}"
+            )
         except Exception as e:
             logger.warning(
                 f"ML Engine could not load pre-trained model: {e}. Running in zero-shot/disabled mode."
