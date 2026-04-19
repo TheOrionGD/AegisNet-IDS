@@ -6,10 +6,14 @@ import datetime
 from datetime import timezone
 from typing import Dict, Any, List, Optional
 from collections import deque
+from pathlib import Path
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_MODELS_DIR = _PROJECT_ROOT / "models"
 
 
 class RealtimeMLEngine:
@@ -42,8 +46,8 @@ class RealtimeMLEngine:
 
     def __init__(
         self,
-        model_path: str = "models/isolation_forest.joblib",
-        scaler_path: str = "models/scaler.joblib",
+        model_path: str = str(_MODELS_DIR / "isolation_forest.joblib"),
+        scaler_path: str = str(_MODELS_DIR / "scaler.joblib"),
         threshold: float = 0.5,
         window_size: int = 60,
     ):
@@ -348,8 +352,8 @@ _global_engine: Optional[RealtimeMLEngine] = None
 
 
 def get_realtime_engine(
-    model_path: str = "models/isolation_forest.joblib",
-    scaler_path: str = "models/scaler.joblib",
+    model_path: str = str(_MODELS_DIR / "isolation_forest.joblib"),
+    scaler_path: str = str(_MODELS_DIR / "scaler.joblib"),
     threshold: float = 0.5,
 ) -> RealtimeMLEngine:
     """Get or create the global realtime ML engine instance."""

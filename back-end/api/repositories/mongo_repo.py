@@ -32,12 +32,15 @@ class MongoRepository(BaseRepository):
         async for anomaly in cursor:
             anomalies.append(
                 {
+                    "id": str(anomaly["_id"]),
                     "timestamp": anomaly["timestamp"].isoformat(),
                     "source": "ML_ENGINE",
                     "anomaly_score": anomaly.get("score", 0.0),
                     "model_type": "Isolation Forest",
                     "message": f"Anomaly detected with score {anomaly.get('score', 0.0)}",
                     "features": anomaly.get("features", {}),
+                    "src_ip": anomaly.get("src_ip", "0.0.0.0"),
+                    "dst_ip": anomaly.get("dst_ip", "0.0.0.0"),
                 }
             )
         return anomalies

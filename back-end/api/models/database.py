@@ -4,6 +4,8 @@ import logging
 import os
 from dotenv import load_dotenv
 from pathlib import Path
+from pydantic import BaseModel
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,6 @@ async def connect_to_mongo():
     """Connect to MongoDB Atlas"""
     try:
         db_instance.client = AsyncIOMotorClient(MONGODB_URL)
-        # Test the connection
         await db_instance.client.admin.command("ping")
         db_instance.db = db_instance.client[DATABASE_NAME]
         logger.info("Connected to MongoDB Atlas")
@@ -48,3 +49,38 @@ async def close_mongo_connection():
 def get_database():
     """Get database instance"""
     return db_instance.db
+
+
+class Feedback(BaseModel):
+    id: str
+    incident_id: str
+    label: str
+    analyst: str
+    notes: Optional[str] = ""
+
+
+class ModelVersion(BaseModel):
+    version: str
+    accuracy: Optional[float] = None
+    precision: Optional[float] = None
+    recall: Optional[float] = None
+    f1_score: Optional[float] = None
+    training_samples: Optional[int] = None
+    trained_at: Optional[str] = None
+
+
+class ResponseAction(BaseModel):
+    id: str
+    incident_id: str
+    action_type: str
+    target: Optional[str] = None
+    status: Optional[str] = "pending"
+    executed_at: Optional[str] = None
+
+
+class RuleScore(BaseModel):
+    sid: int
+    hit_count: int = 0
+    effectiveness_score: float = 0.0
+    is_retired: bool = False
+    last_hit_at: Optional[str] = None

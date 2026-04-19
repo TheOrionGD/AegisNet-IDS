@@ -1,12 +1,12 @@
 from typing import List, Dict, Any, Optional
 from ..models.security_event import SecurityEvent
-from ..repositories.base_repo import BaseRepository
+from ..repositories.mongo_repo import MongoRepository
 import json
 import asyncio
 
 
 class AlertService:
-    def __init__(self, repository: BaseRepository):
+    def __init__(self, repository: MongoRepository):
         self.repository = repository
 
     async def get_normalized_alerts(self, limit: int = 100) -> List[SecurityEvent]:
@@ -58,6 +58,7 @@ class AlertService:
             return await self.repository.get_top_ips(limit=limit)
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).error(f"Error fetching top IPs: {e}")
             return []
 
@@ -66,6 +67,7 @@ class AlertService:
             return await self.repository.get_timeline(hours=hours)
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).error(f"Error fetching timeline: {e}")
             return []
 

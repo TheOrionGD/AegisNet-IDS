@@ -1,15 +1,15 @@
 from typing import List, Dict, Any, Optional
 from ..models.security_event import Anomaly
-from ..repositories.base_repo import BaseRepository
+from ..repositories.mongo_repo import MongoRepository
 import json
 
 
 class AnomalyService:
-    def __init__(self, repository: BaseRepository):
+    def __init__(self, repository: MongoRepository):
         self.repository = repository
 
-    def get_anomalies(self, limit: int = 50) -> List[Anomaly]:
-        raw_anomalies = self.repository.get_anomalies(limit=limit)
+    async def get_anomalies(self, limit: int = 50) -> List[Anomaly]:
+        raw_anomalies = await self.repository.get_anomalies(limit=limit)
         results = []
         for ra in raw_anomalies:
             score = 0.0

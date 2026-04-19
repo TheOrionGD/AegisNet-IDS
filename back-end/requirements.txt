@@ -24,4 +24,5 @@ aiokafka>=0.8.1
 elasticsearch>=8.10.0
 pydantic-settings>=2.0.0
 ipaddress>=1.0.23
+sqlalchemy>=2.0.0
 

@@ -1,13 +1,13 @@
 from typing import List, Dict, Any, Optional
 from ..models.security_event import Incident
-from ..repositories.base_repo import BaseRepository
+from ..repositories.mongo_repo import MongoRepository
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class IncidentService:
-    def __init__(self, repository: BaseRepository):
+    def __init__(self, repository: MongoRepository):
         self.repository = repository
 
     async def get_incidents(self, limit: int = 50) -> List[Incident]:

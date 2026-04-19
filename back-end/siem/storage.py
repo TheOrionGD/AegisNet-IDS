@@ -5,254 +5,114 @@ from datetime import timezone
 import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
 
-# ── Optional Elasticsearch (graceful degradation to in-memory in dev) ──────────
-try:
-    from elasticsearch import Elasticsearch, NotFoundError
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import ConnectionFailure
 
-    _ES_AVAILABLE = True
-except ImportError:
-    _ES_AVAILABLE = False
-    logger_pre = logging.getLogger(__name__)
-    logger_pre.warning("elasticsearch package not found — ES storage disabled.")
+import os
+from dotenv import load_dotenv
 
 from api.models.database import (
     Feedback,
     ModelVersion,
     ResponseAction,
     RuleScore,
-    Incident as PGIncident,
-    SecurityEvent as PGEvent,
+    get_database,
+    db_instance,
+    MONGODB_URL,
+    DATABASE_NAME,
 )
 from config_loader import load_config
 
 logger = logging.getLogger(__name__)
 
-
-class _ESStub:
-    """In-memory stub that mimics just enough of the ES client to keep the pipeline running."""
-
-    def __init__(self):
-        self._store: Dict[str, Dict] = {}  # index:id → doc
-        self._lists: Dict[str, list] = {}  # index → list of docs
-
-    def _key(self, index, doc_id):
-        return f"{index}:{doc_id}"
-
-    class _Indices:
-        def exists(self, index):
-            return True
-
-        def create(self, **kw):
-            pass
-
-    indices = _Indices()
-
-    def index(self, index, document, id=None, **kw):
-        doc_id = id or str(uuid.uuid4())
-        self._lists.setdefault(index, []).append(document)
-        self._store[self._key(index, doc_id)] = document
-        return {"result": "created", "_id": doc_id}
-
-    def search(self, index="*", query=None, size=100, sort=None, **kw):
-        # Flatten all indices matching the pattern
-        hits = []
-        for k, docs in self._lists.items():
-            pat = index.replace("*", "")
-            if pat in k or index == "*":
-                hits.extend(docs)
-        hits = hits[-size:]
-        return {
-            "hits": {
-                "hits": [{"_source": d} for d in reversed(hits)],
-                "total": {"value": len(hits)},
-            }
-        }
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(dotenv_path=_PROJECT_ROOT / ".env", override=False)
 
 
 class SIEMStorage:
     """
-    Production-grade SIEM Storage abstraction.
-    Uses Elasticsearch for high-volume telemetry and PostgreSQL for relational state.
-    Falls back to in-memory stub + SQLite when services are unavailable (dev mode).
+    Production-grade SIEM Storage abstraction using MongoDB Atlas.
+    Uses motor async client for logs/feedback and MongoDB collections for incidents.
     """
 
-    def __init__(self, es_url: str = None, pg_url: str = None):
+    def __init__(self, mongo_url: str = None, db_name: str = None):
         self.config = load_config()
+        self.mongo_url = mongo_url or MONGODB_URL
+        self.db_name = db_name or DATABASE_NAME
+        self.client: AsyncIOMotorClient = None
+        self.db = None
+        self._connected = False
+        self._connect()
 
-        # ── Elasticsearch / Stub ──────────────────────────────────────────────
-        es_url = es_url or self.config.get("elasticsearch", {}).get(
-            "url", "http://localhost:9200"
-        )
-        self.log_index = "cns-alerts"
-        self.incident_index = "cns-incidents"
-
-        if _ES_AVAILABLE:
-            try:
-                # First, do a light-weight ping with a very short timeout
-                test_es = Elasticsearch([es_url], request_timeout=1, max_retries=0)
-                if not test_es.ping():
-                    raise ConnectionError("ES ping failed")
-
-                # If ping succeeds, create the real client
-                self.es = Elasticsearch(
-                    [es_url],
-                    request_timeout=2,
-                    retry_on_timeout=True,
-                    max_retries=3,
-                    verify_certs=False,
-                )
-                self._es_mode = "live"
-                logger.info(f"[STORAGE] Elasticsearch connected at {es_url}")
-            except Exception as e:
-                logger.warning(
-                    f"[STORAGE] Elasticsearch unreachable at {es_url} ({type(e).__name__}: {e}). Using in-memory stub."
-                )
-                self.es = _ESStub()
-                self._es_mode = "stub"
-        else:
-            self.es = _ESStub()
-            self._es_mode = "stub"
-
-        # ── PostgreSQL / SQLite ───────────────────────────────────────────────
-        pg_url = pg_url or self.config.get("database", {}).get(
-            "url", "sqlite:///data/cns.db"
-        )
-        self._fallback_sqlite = False
-        self.pg_url = pg_url
+    def _connect(self):
+        """Establish MongoDB connection."""
         try:
-            self.engine = create_engine(pg_url)
-            self.SessionLocal = sessionmaker(
-                autocommit=False, autoflush=False, bind=self.engine
-            )
-            self._pg_mode = "live"
-            logger.info(f"[STORAGE] Database connected: {pg_url[:40]}...")
+            self.client = AsyncIOMotorClient(self.mongo_url)
+            self.db = self.client[self.db_name]
+            self._connected = True
+            logger.info(f"[STORAGE] Connected to MongoDB: {self.db_name}")
         except Exception as e:
-            logger.error(f"[STORAGE] DB engine creation failed: {e}")
-            self.engine = None
-            self.SessionLocal = None
-            self._pg_mode = "unavailable"
+            logger.error(f"[STORAGE] MongoDB connection failed: {e}")
+            self._connected = False
 
-        self._ensure_indices()
+    @property
+    def logs_collection(self):
+        """Get logs collection."""
+        return self.db["logs"]
 
-    def _fallback_to_sqlite(self, fallback_path: str = None):
-        if fallback_path is None:
-            fallback_path = Path(__file__).resolve().parents[1] / "data" / "cns.db"
-        sqlite_url = f"sqlite:///{fallback_path.as_posix()}"
+    @property
+    def incidents_collection(self):
+        """Get incidents collection."""
+        return self.db["incidents"]
+
+    @property
+    def feedback_collection(self):
+        """Get feedback collection."""
+        return self.db["feedback"]
+
+    @property
+    def model_versions_collection(self):
+        """Get model versions collection."""
+        return self.db["model_versions"]
+
+    @property
+    def response_actions_collection(self):
+        """Get response actions collection."""
+        return self.db["response_actions"]
+
+    @property
+    def rule_scores_collection(self):
+        """Get rule scores collection."""
+        return self.db["rule_scores"]
+
+    @property
+    def ids_events_collection(self):
+        """Get IDS events collection."""
+        return self.db["ids_events"]
+
+    async def _ensure_indices(self):
+        """Ensure MongoDB indices exist."""
         try:
-            self.engine = create_engine(sqlite_url)
-            self.SessionLocal = sessionmaker(
-                autocommit=False, autoflush=False, bind=self.engine
-            )
-            self._pg_mode = "stub"
-            self._fallback_sqlite = True
-            logger.warning(f"[STORAGE] Falling back to local SQLite DB at {sqlite_url}")
-            with self.engine.begin() as conn:
-                conn.execute(
-                    text("""
-                    CREATE TABLE IF NOT EXISTS technical_incidents (
-                        incident_id TEXT PRIMARY KEY,
-                        data TEXT,
-                        start_time TEXT
-                    )
-                """)
-                )
-            logger.info("[STORAGE] Local SQLite fallback storage initialized.")
+            await self.logs_collection.create_index("timestamp")
+            await self.logs_collection.create_index("src_ip")
+            await self.logs_collection.create_index("alert_type")
+            await self.incidents_collection.create_index("incident_id")
+            await self.incidents_collection.create_index("start_time")
+            await self.feedback_collection.create_index("incident_id")
+            await self.ids_events_collection.create_index("timestamp")
+            await self.ids_events_collection.create_index("src_ip")
+            await self.ids_events_collection.create_index("ml_score")
+            logger.info("[STORAGE] MongoDB indices ensured")
         except Exception as e:
-            logger.error(f"[STORAGE] SQLite fallback failed: {e}")
-            self.engine = None
-            self.SessionLocal = None
-            self._pg_mode = "unavailable"
+            logger.warning(f"[STORAGE] Failed to create indices: {e}")
 
-    def _ensure_indices(self):
-        """Ensure ES indices exist with proper mappings."""
-        try:
-            if not self.es.indices.exists(index=self.incident_index):
-                self.es.indices.create(
-                    index=self.incident_index,
-                    body={
-                        "mappings": {
-                            "properties": {
-                                "incident_id": {"type": "keyword"},
-                                "src_ip": {"type": "ip"},
-                                "dst_ip": {"type": "ip"},
-                                "severity": {"type": "keyword"},
-                                "start_time": {"type": "date"},
-                                "end_time": {"type": "date"},
-                                "attack_pattern": {"type": "keyword"},
-                                "confidence": {"type": "float"},
-                                "ml_score": {"type": "float"},
-                                "ml_risk_level": {"type": "keyword"},
-                                "is_anomaly": {"type": "boolean"},
-                            }
-                        }
-                    },
-                )
-                logger.info(f"Created ES index: {self.incident_index}")
-        except Exception as e:
-            logger.error(f"Failed to ensure ES indices: {e}")
+    async def ingest_log(self, log_entry: Dict[str, Any]) -> str:
+        """Store a log entry in MongoDB logs collection."""
+        if not self._connected:
+            logger.warning("[STORAGE] MongoDB not connected, skipping log ingest")
+            return None
 
-        try:
-            ids_index = "cns-ids-events"
-            if not self.es.indices.exists(index=ids_index):
-                self.es.indices.create(
-                    index=ids_index,
-                    body={
-                        "mappings": {
-                            "properties": {
-                                "timestamp": {"type": "date"},
-                                "src_ip": {"type": "ip"},
-                                "dst_ip": {"type": "ip"},
-                                "src_port": {"type": "integer"},
-                                "dst_port": {"type": "integer"},
-                                "protocol": {"type": "keyword"},
-                                "alert_type": {"type": "keyword"},
-                                "severity": {"type": "keyword"},
-                                "signature_id": {"type": "keyword"},
-                                "ml_score": {"type": "float"},
-                                "ml_risk_level": {"type": "keyword"},
-                                "is_anomaly": {"type": "boolean"},
-                                "threat_level": {"type": "keyword"},
-                            }
-                        }
-                    },
-                )
-                logger.info(f"Created ES index: {ids_index}")
-        except Exception as e:
-            logger.warning(f"Failed to create IDS events index: {e}")
-
-        # Ensure SQLite technical_incidents table exists if DB is connected
-        if self._pg_mode == "live":
-            try:
-                with self.engine.begin() as conn:
-                    # technical_incidents for dev/stub shared state
-                    conn.execute(
-                        text("""
-                        CREATE TABLE IF NOT EXISTS technical_incidents (
-                            incident_id TEXT PRIMARY KEY,
-                            data TEXT,
-                            start_time TEXT
-                        )
-                    """)
-                    )
-                    logger.info("Ensured technical_incidents table in SQLite/PG")
-            except Exception as e:
-                logger.error(f"Failed to ensure technical_incidents table: {e}")
-                if self.pg_url.startswith("postgresql"):
-                    logger.warning(
-                        "[STORAGE] PostgreSQL unavailable. Falling back to local SQLite."
-                    )
-                    self._fallback_to_sqlite()
-        elif self._pg_mode == "unavailable":
-            self._fallback_to_sqlite()
-
-    # --- Telemetry (Elasticsearch) ---
-
-    def ingest_log(self, log_entry: Dict[str, Any]) -> str:
-        """Proxied log ingestion with schema safety for downstream ML and dashboard."""
         log_id = str(uuid.uuid4())
         log_entry["id"] = log_id
 
@@ -264,18 +124,20 @@ class SIEMStorage:
         log_entry.setdefault("severity", "LOW")
         log_entry.setdefault("alert_type", "GENERIC_ALERT")
 
-        index_name = (
-            f"cns-alerts-{datetime.datetime.now(timezone.utc).strftime('%Y.%m.%d')}"
-        )
         try:
-            self.es.index(index=index_name, document=log_entry)
+            await self.logs_collection.insert_one(log_entry)
+            logger.debug(f"[STORAGE] Stored log: {log_id}")
         except Exception as e:
-            logger.error(f"[STORAGE] Failed to index log in ES: {e}")
+            logger.error(f"[STORAGE] Failed to store log: {e}")
 
         return log_id
 
-    def ingest_ids_event(self, event: Dict[str, Any]) -> str:
+    async def ingest_ids_event(self, event: Dict[str, Any]) -> str:
         """Fast-path ingestion for IDS/Snort events with ML scoring."""
+        if not self._connected:
+            logger.warning("[STORAGE] MongoDB not connected, skipping IDS event")
+            return None
+
         event_id = str(uuid.uuid4())
         event["id"] = event_id
 
@@ -293,175 +155,180 @@ class SIEMStorage:
         event.setdefault("is_anomaly", False)
         event.setdefault("threat_level", "NORMAL")
 
-        index_name = "cns-ids-events"
         try:
-            self.es.index(index=index_name, document=event)
+            await self.ids_events_collection.insert_one(event)
             logger.debug(
-                f"[STORAGE] Indexed IDS event: {event.get('src_ip')} -> {event.get('dst_ip')}"
+                f"[STORAGE] Stored IDS event: {event.get('src_ip')} -> {event.get('dst_ip')}"
             )
         except Exception as e:
-            logger.error(f"[STORAGE] Failed to index IDS event: {e}")
+            logger.error(f"[STORAGE] Failed to store IDS event: {e}")
 
         return event_id
 
-    def get_ids_events(
+    async def get_ids_events(
         self, hours_back: int = 24, min_score: float = 0.0
     ) -> List[Dict[str, Any]]:
         """Query IDS events with optional ML score filtering."""
-        query = {
-            "bool": {"must": [{"range": {"timestamp": {"gte": f"now-{hours_back}h"}}}]}
-        }
-
-        if min_score > 0:
-            query["bool"]["must"].append({"range": {"ml_score": {"gte": min_score}}})
+        if not self._connected:
+            return []
 
         try:
-            res = self.es.search(index="cns-ids-events", query=query, size=1000)
-            return [hit["_source"] for hit in res["hits"]["hits"]]
+            cutoff = datetime.datetime.now(timezone.utc) - datetime.timedelta(
+                hours=hours_back
+            )
+            query = {
+                "timestamp": {"$gte": cutoff.isoformat()},
+            }
+            if min_score > 0:
+                query["ml_score"] = {"$gte": min_score}
+
+            cursor = (
+                self.ids_events_collection.find(query).sort("timestamp", -1).limit(1000)
+            )
+            events = await cursor.to_list(length=1000)
+            return [event.pop("_id", None) or event for event in events]
         except Exception as e:
             logger.error(f"[STORAGE] Failed to query IDS events: {e}")
             return []
 
-    def get_anomalous_ips(
+    async def get_anomalous_ips(
         self, hours_back: int = 24, min_score: float = 0.7
     ) -> List[Dict[str, Any]]:
         """Get IPs with high anomaly scores."""
-        query = {
-            "bool": {
-                "must": [
-                    {"range": {"timestamp": {"gte": f"now-{hours_back}h"}}},
-                    {"range": {"ml_score": {"gte": min_score}}},
-                ]
-            }
-        }
+        if not self._connected:
+            return []
 
         try:
-            res = self.es.search(
-                index="cns-ids-events",
-                query=query,
-                size=100,
-                aggs={
-                    "top_ips": {
-                        "terms": {"field": "src_ip", "size": 20},
-                        "aggs": {"avg_score": {"avg": {"field": "ml_score"}}},
+            cutoff = datetime.datetime.now(timezone.utc) - datetime.timedelta(
+                hours=hours_back
+            )
+            pipeline = [
+                {
+                    "$match": {
+                        "timestamp": {"$gte": cutoff.isoformat()},
+                        "ml_score": {"$gte": min_score},
                     }
                 },
-            )
+                {
+                    "$group": {
+                        "_id": "$src_ip",
+                        "count": {"$sum": 1},
+                        "avg_score": {"$avg": "$ml_score"},
+                    }
+                },
+                {"$sort": {"count": -1}},
+                {"$limit": 20},
+            ]
 
-            buckets = res.get("aggregations", {}).get("top_ips", {}).get("buckets", [])
+            cursor = self.ids_events_collection.aggregate(pipeline)
+            results = await cursor.to_list(length=20)
             return [
                 {
-                    "ip": b["key"],
-                    "count": b["doc_count"],
-                    "avg_score": b["avg_score"]["value"],
+                    "ip": r["_id"],
+                    "count": r["count"],
+                    "avg_score": r["avg_score"],
                 }
-                for b in buckets
+                for r in results
             ]
         except Exception as e:
             logger.error(f"[STORAGE] Failed to get anomalous IPs: {e}")
             return []
 
-    def get_recent_logs(self, src_ip: str, minutes_back: int) -> List[Dict[str, Any]]:
-        """Retrieve recent logs from Elasticsearch."""
-        query = {
-            "bool": {
-                "must": [
-                    {"term": {"src_ip": src_ip}},
-                    {"range": {"timestamp": {"gte": f"now-{minutes_back}m"}}},
-                ]
-            }
-        }
-        res = self.es.search(
-            index=f"{self.log_index}-*",
-            query={"bool": {"must": query["bool"]["must"]}},
-            size=1000,
-        )
-        return [hit["_source"] for hit in res["hits"]["hits"]]
+    async def get_recent_logs(
+        self, src_ip: str, minutes_back: int
+    ) -> List[Dict[str, Any]]:
+        """Retrieve recent logs from MongoDB."""
+        if not self._connected:
+            return []
 
-    def get_raw_logs_window(self, hours_back: int = 24) -> List[Dict[str, Any]]:
-        """Retrieve logs from ES for a time window."""
-        query = {"range": {"timestamp": {"gte": f"now-{hours_back}h"}}}
-        res = self.es.search(index=self.log_index, query=query, size=5000)
-        return [hit["_source"] for hit in res["hits"]["hits"]]
-
-    # --- Incidents (Elasticsearch + Postgres Metadata) ---
-
-    def store_incident(self, incident: Dict[str, Any]):
-        """Store a correlated incident in ES for searchability."""
-        self.es.index(
-            index=self.incident_index, id=incident["incident_id"], document=incident
-        )
-        logger.info(f"Indexed Incident in ES: {incident['incident_id']}")
-
-        # Fallback to SQLite technical_incidents if ES is in stub mode
-        if self._es_mode == "stub" and self._pg_mode == "live":
-            try:
-                with self.engine.begin() as conn:
-                    conn.execute(
-                        text(
-                            "INSERT OR REPLACE INTO technical_incidents (incident_id, data, start_time) VALUES (:id, :data, :ts)"
-                        ),
-                        {
-                            "id": incident["incident_id"],
-                            "data": json.dumps(incident),
-                            "ts": incident.get("start_time"),
-                        },
-                    )
-                logger.info(f"Buffered incident in SQLite: {incident['incident_id']}")
-            except Exception as e:
-                logger.error(f"Failed to buffer incident in SQLite: {e}")
-
-    def get_all_incidents(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """Retrieve incidents from ES."""
-        if self._es_mode == "live":
-            res = self.es.search(
-                index=self.incident_index,
-                query={"match_all": {}},
-                size=limit,
-                sort=[{"start_time": "desc"}],
+        try:
+            cutoff = datetime.datetime.now(timezone.utc) - datetime.timedelta(
+                minutes=minutes_back
             )
-            return [hit["_source"] for hit in res["hits"]["hits"]]
-        elif self._pg_mode == "live":
-            # Fallback to technical_incidents table
-            try:
-                with self.engine.connect() as conn:
-                    res = conn.execute(
-                        text(
-                            "SELECT data FROM technical_incidents ORDER BY start_time DESC LIMIT :limit"
-                        ),
-                        {"limit": limit},
-                    )
-                    return [json.loads(row[0]) for row in res.fetchall()]
-            except Exception as e:
-                logger.error(f"Failed to fetch incidents from SQLite: {e}")
+            query = {
+                "src_ip": src_ip,
+                "timestamp": {"$gte": cutoff.isoformat()},
+            }
+            cursor = self.logs_collection.find(query).sort("timestamp", -1).limit(1000)
+            logs = await cursor.to_list(length=1000)
+            return [log.pop("_id", None) or log for log in logs]
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to get recent logs: {e}")
+            return []
 
-        # Fallback to ES search (which will use stub memory)
-        res = self.es.search(
-            index=self.incident_index, query={"match_all": {}}, size=limit
-        )
-        return [hit["_source"] for hit in res["hits"]["hits"]]
+    async def get_raw_logs_window(self, hours_back: int = 24) -> List[Dict[str, Any]]:
+        """Retrieve logs from MongoDB for a time window."""
+        if not self._connected:
+            return []
 
-    # --- Relational State (PostgreSQL) ---
+        try:
+            cutoff = datetime.datetime.now(timezone.utc) - datetime.timedelta(
+                hours=hours_back
+            )
+            query = {"timestamp": {"$gte": cutoff.isoformat()}}
+            cursor = self.logs_collection.find(query).sort("timestamp", -1).limit(5000)
+            logs = await cursor.to_list(length=5000)
+            return [log.pop("_id", None) or log for log in logs]
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to get logs window: {e}")
+            return []
 
-    def store_response_action(self, action: Dict[str, Any]):
-        """Persist SOAR response action to PostgreSQL."""
-        if not self.SessionLocal:
-            logger.warning("[STORAGE] store_response_action skipped — DB unavailable.")
+    async def store_incident(self, incident: Dict[str, Any]):
+        """Store a correlated incident in MongoDB."""
+        if not self._connected:
+            logger.warning("[STORAGE] MongoDB not connected, skipping incident store")
             return
-        with self.SessionLocal() as session:
-            db_action = ResponseAction(**action)
-            session.add(db_action)
-            session.commit()
-            logger.info(f"Stored Response Action in PG: {action['id']}")
 
-    def submit_feedback(
+        try:
+            await self.incidents_collection.replace_one(
+                {"incident_id": incident["incident_id"]},
+                incident,
+                upsert=True,
+            )
+            logger.info(f"[STORAGE] Stored incident: {incident['incident_id']}")
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to store incident: {e}")
+
+    async def get_all_incidents(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Retrieve incidents from MongoDB."""
+        if not self._connected:
+            return []
+
+        try:
+            cursor = (
+                self.incidents_collection.find().sort("start_time", -1).limit(limit)
+            )
+            incidents = await cursor.to_list(length=limit)
+            return [incident.pop("_id", None) or incident for incident in incidents]
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to get incidents: {e}")
+            return []
+
+    async def store_response_action(self, action: Dict[str, Any]):
+        """Persist SOAR response action to MongoDB."""
+        if not self._connected:
+            logger.warning("[STORAGE] MongoDB not connected, skipping response action")
+            return
+
+        try:
+            await self.response_actions_collection.replace_one(
+                {"id": action["id"]},
+                action,
+                upsert=True,
+            )
+            logger.info(f"[STORAGE] Stored response action: {action['id']}")
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to store response action: {e}")
+
+    async def submit_feedback(
         self, incident_id: str, label: str, analyst: str = "system", notes: str = ""
     ):
-        """Store analyst feedback in PostgreSQL."""
-        if not self.SessionLocal:
-            logger.warning("[STORAGE] submit_feedback skipped — DB unavailable.")
+        """Store analyst feedback in MongoDB."""
+        if not self._connected:
+            logger.warning("[STORAGE] MongoDB not connected, skipping feedback")
             return
-        with self.SessionLocal() as session:
+
+        try:
             fb = Feedback(
                 id=str(uuid.uuid4()),
                 incident_id=incident_id,
@@ -469,46 +336,66 @@ class SIEMStorage:
                 analyst=analyst,
                 notes=notes,
             )
-            session.add(fb)
-            session.commit()
+            await self.feedback_collection.insert_one(fb.model_dump())
+            logger.info(f"[STORAGE] Stored feedback for incident: {incident_id}")
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to store feedback: {e}")
 
-    def update_model_version(self, version_data: Dict[str, Any]):
-        """Store model training metadata in PostgreSQL."""
-        if not self.SessionLocal:
-            logger.warning("[STORAGE] update_model_version skipped — DB unavailable.")
+    async def update_model_version(self, version_data: Dict[str, Any]):
+        """Store model training metadata in MongoDB."""
+        if not self._connected:
+            logger.warning("[STORAGE] MongoDB not connected, skipping model version")
             return
-        with self.SessionLocal() as session:
-            mv = (
-                session.query(ModelVersion)
-                .filter_by(version=version_data["version"])
-                .first()
+
+        try:
+            await self.model_versions_collection.replace_one(
+                {"version": version_data["version"]},
+                version_data,
+                upsert=True,
             )
-            if mv:
-                for k, v in version_data.items():
-                    setattr(mv, k, v)
-            else:
-                mv = ModelVersion(**version_data)
-                session.add(mv)
-            session.commit()
+            logger.info(f"[STORAGE] Stored model version: {version_data['version']}")
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to store model version: {e}")
 
-    def get_rule_score(self, sid: int) -> Optional[Dict[str, Any]]:
-        if not self.SessionLocal:
-            return None
-        with self.SessionLocal() as session:
-            rule = session.query(RuleScore).filter_by(sid=sid).first()
-            if rule:
-                return {
-                    "sid": rule.sid,
-                    "hit_count": rule.hit_count,
-                    "effectiveness_score": rule.effectiveness_score,
-                    "is_retired": int(rule.is_retired),
-                }
+    async def get_rule_score(self, sid: int) -> Optional[Dict[str, Any]]:
+        if not self._connected:
             return None
 
-    def update_rule_hit(self, sid: int):
-        with self.SessionLocal() as session:
-            rule = session.query(RuleScore).filter_by(sid=sid).first()
+        try:
+            rule = await self.rule_scores_collection.find_one({"sid": sid})
             if rule:
-                rule.hit_count += 1
-                rule.last_hit_at = datetime.datetime.now(timezone.utc)
-                session.commit()
+                rule.pop("_id", None)
+                return rule
+            return None
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to get rule score: {e}")
+            return None
+
+    async def update_rule_hit(self, sid: int):
+        if not self._connected:
+            return
+
+        try:
+            result = await self.rule_scores_collection.find_one_and_update(
+                {"sid": sid},
+                {
+                    "$inc": {"hit_count": 1},
+                    "$set": {
+                        "last_hit_at": datetime.datetime.now(timezone.utc).isoformat()
+                    },
+                },
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to update rule hit: {e}")
+
+
+_storage_instance: Optional[SIEMStorage] = None
+
+
+def get_storage() -> SIEMStorage:
+    """Get or create SIEM storage singleton."""
+    global _storage_instance
+    if _storage_instance is None:
+        _storage_instance = SIEMStorage()
+    return _storage_instance

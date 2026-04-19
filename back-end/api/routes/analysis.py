@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from core.realtime_ml import get_realtime_engine
 from core.ip_reputation import get_reputation_tracker
-from siem.storage import SIEMStorage
+from siem.storage import SIEMStorage, get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class AnalysisResult(BaseModel):
 def _get_storage() -> Optional[SIEMStorage]:
     """Get SIEM storage instance."""
     try:
-        return SIEMStorage()
+        return get_storage()
     except Exception as e:
         logger.warning(f"Storage not available: {e}")
         return None
@@ -94,7 +94,7 @@ async def analyze_event(event: EventInput):
                 "severity": result.get("risk_level", "LOW"),
                 "anomaly_score": result.get("anomaly_score", 0.0),
             }
-            storage.ingest_log(log_entry)
+            await storage.ingest_log(log_entry)
         except Exception as e:
             logger.warning(f"Storage write failed: {e}")
 
@@ -165,7 +165,7 @@ async def analyze_batch(batch: BatchInput):
                         "severity": result.get("risk_level", "LOW"),
                         "anomaly_score": result.get("anomaly_score", 0.0),
                     }
-                    storage.ingest_log(log_entry)
+                    await storage.ingest_log(log_entry)
                 except Exception as e:
                     logger.warning(f"Storage write failed: {e}")
 
