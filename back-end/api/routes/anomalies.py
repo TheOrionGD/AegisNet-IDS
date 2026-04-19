@@ -23,60 +23,13 @@ async def get_anomalies(
     """
     try:
         result = await service.get_anomalies(limit=limit)
-        return result if result else []
-    except Exception as e:
-        logger.error(f"Anomalies error: {e}", exc_info=True)
-        return []
-
-        result = await service.get_anomalies(limit=limit)
-
         if result is None:
             logger.info("[anomalies] Result is None, returning []")
             return []
-
         logger.info(f"[anomalies] Returning {len(result)} anomalies")
         return result
-
     except Exception as e:
         logger.error(f"[anomalies] Error: {e}", exc_info=True)
-        return []
-
-        result = await service.get_anomalies(limit=limit)
-
-        if result is None:
-            logger.info("[anomalies] Result is None, returning []")
-            return []
-
-        logger.info(f"[anomalies] Returning {len(result)} anomalies")
-        return result
-
-    except Exception as e:
-        logger.error(f"[anomalies] Error: {e}", exc_info=True)
-        return []
-
-        result = raw_result(limit=limit)
-
-        if hasattr(result, "__await__"):
-            logger.info(f"[anomalies] Result is awaitable, awaiting...")
-            result = await result
-
-        logger.info(f"[anomalies] Result type: {type(result)}")
-
-        if result is None:
-            return []
-
-        return result
-
-    except Exception as e:
-        logger.error(f"[anomalies] Error: {e}", exc_info=True)
-        return []
-        return result
-    except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).error(
-            f"Error fetching anomalies: {e}", exc_info=True
-        )
         return []
 
 

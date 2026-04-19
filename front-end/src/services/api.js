@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:2345',
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:2346',
 });
 
 // Request interceptor: Attach JWT token if available

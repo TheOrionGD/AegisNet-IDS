@@ -15,8 +15,8 @@ export default defineConfig({
   // bundle.  Variables without this prefix stay server-side and are invisible
   // to import.meta.env in your React components.
   //
-  //   ✅  VITE_API_BASE_URL=http://10.169.17.117:2345   → import.meta.env.VITE_API_BASE_URL
-  //   ✅  VITE_WS_URL=ws://10.169.17.117:2345/ws/events → import.meta.env.VITE_WS_URL
+//   ✅  VITE_API_BASE_URL=http://10.169.17.117:2346   → import.meta.env.VITE_API_BASE_URL
+//   ✅  VITE_WS_URL=ws://10.169.17.117:2346/ws/events → import.meta.env.VITE_WS_URL
   //   ❌  MONGODB_URL=...                               → never exposed to the browser
   // ────────────────────────────────────────────────────────────────────────────
   envDir: '..', // one level up → E:\PROJECTS\CNS

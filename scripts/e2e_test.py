@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import sys, io
+
 # Force UTF-8 on Windows consoles (cp1252 cannot render box-drawing chars)
-if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 """
 AegisNet SIEM - End-to-End Test Suite
 ======================================
@@ -12,10 +13,10 @@ Tests the full pipeline: API health -> Auth -> Alert Ingestion ->
 Analysis Pipeline → Incident Generation → SOAR → WebSocket events.
 
 Usage:
-    python scripts/e2e_test.py [--base-url http://localhost:2345]
+    python scripts/e2e_test.py [--base-url http://localhost:2346]
 
 Prereqs:
-    • run_system.py must be running (or at least the SIEM API on port 2345)
+    • run_system.py must be running (or at least the SIEM API on port 2346)
     • Virtual env activated: .venv\\Scripts\\activate
 """
 
@@ -33,21 +34,23 @@ from typing import Optional
 import requests
 import websockets  # pip install websockets
 
-BASE_URL = "http://localhost:2345"
-WS_URL = "ws://localhost:2345/ws/events"
+BASE_URL = "http://localhost:2346"
+WS_URL = "ws://localhost:2346/ws/events"
 TIMEOUT = 10  # seconds per HTTP request
 
 # ─────────────────────────────────────────────
 # Colours (Windows-safe)
 # ─────────────────────────────────────────────
 try:
-    import colorama; colorama.init(strip=False)
-    GREEN  = "\033[92m"
-    RED    = "\033[91m"
+    import colorama
+
+    colorama.init(strip=False)
+    GREEN = "\033[92m"
+    RED = "\033[91m"
     YELLOW = "\033[93m"
-    CYAN   = "\033[96m"
-    BOLD   = "\033[1m"
-    RESET  = "\033[0m"
+    CYAN = "\033[96m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
 except ImportError:
     GREEN = RED = YELLOW = CYAN = BOLD = RESET = ""
 
@@ -62,6 +65,7 @@ SEP2 = "-" * 60
 # ─────────────────────────────────────────────
 results: list[dict] = []
 
+
 def record(name: str, passed: bool, detail: str = "", warn: bool = False):
     status = "PASS" if passed else ("WARN" if warn else "FAIL")
     colour = GREEN if passed else (YELLOW if warn else RED)
@@ -69,10 +73,12 @@ def record(name: str, passed: bool, detail: str = "", warn: bool = False):
     icon = PASS_ICON if passed else (WARN_ICON if warn else FAIL_ICON)
     print(f"  {colour}{icon} {name}{RESET}  {detail}")
 
+
 def section(title: str):
     print(f"\n{BOLD}{CYAN}{SEP2}{RESET}")
     print(f"{BOLD}{CYAN}  {title}{RESET}")
     print(f"{BOLD}{CYAN}{SEP2}{RESET}")
+
 
 # ─────────────────────────────────────────────
 # Helpers
@@ -81,15 +87,30 @@ def get(path: str, token: Optional[str] = None, **kw) -> requests.Response:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     return requests.get(f"{BASE_URL}{path}", headers=headers, timeout=TIMEOUT, **kw)
 
-def post(path: str, data=None, json_body=None, token: Optional[str] = None, **kw) -> requests.Response:
+
+def post(
+    path: str, data=None, json_body=None, token: Optional[str] = None, **kw
+) -> requests.Response:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     if data:
         headers["Content-Type"] = "application/x-www-form-urlencoded"
-    return requests.post(f"{BASE_URL}{path}", data=data, json=json_body,
-                         headers=headers, timeout=TIMEOUT, **kw)
+    return requests.post(
+        f"{BASE_URL}{path}",
+        data=data,
+        json=json_body,
+        headers=headers,
+        timeout=TIMEOUT,
+        **kw,
+    )
 
-def make_alert(src_ip="192.168.1.100", dst_ip="10.0.0.1", proto="TCP",
-               severity="HIGH", label="Port Scan") -> dict:
+
+def make_alert(
+    src_ip="192.168.1.100",
+    dst_ip="10.0.0.1",
+    proto="TCP",
+    severity="HIGH",
+    label="Port Scan",
+) -> dict:
     return {
         "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         "src_ip": src_ip,
@@ -103,6 +124,7 @@ def make_alert(src_ip="192.168.1.100", dst_ip="10.0.0.1", proto="TCP",
         "pkt_len": 64,
     }
 
+
 # ─────────────────────────────────────────────
 # Phase 0: API Reachability
 # ─────────────────────────────────────────────
@@ -114,9 +136,11 @@ def phase_reachability():
         body = r.json() if passed else {}
         record("Root endpoint 200 OK", passed, f"status={r.status_code}")
         if passed:
-            record("Root returns 'active' status",
-                   body.get("status") == "active",
-                   f"status={body.get('status')}")
+            record(
+                "Root returns 'active' status",
+                body.get("status") == "active",
+                f"status={body.get('status')}",
+            )
     except Exception as e:
         record("Root endpoint reachable", False, str(e))
         print(f"\n  {RED}FATAL: API is unreachable at {BASE_URL}.{RESET}")
@@ -135,13 +159,16 @@ def phase_reachability():
         body = r.json() if passed else {}
         record("Health endpoint 200 OK", passed, f"status={r.status_code}")
         if passed:
-            record("Health status is OK",
-                   body.get("status") == "OK",
-                   f"got={body.get('status')}")
+            record(
+                "Health status is OK",
+                body.get("status") == "OK",
+                f"got={body.get('status')}",
+            )
     except Exception as e:
         record("Health endpoint", False, str(e))
 
     return True
+
 
 # ─────────────────────────────────────────────
 # Phase 0.5: Shared Services Check
@@ -149,18 +176,25 @@ def phase_reachability():
 REDIS_UP = False
 ES_UP = False
 
+
 def phase_services():
     global REDIS_UP, ES_UP
     section("Phase 0.5 · Shared Services Check")
-    
+
     # Probe Redis (6379)
     import socket
+
     try:
         with socket.create_connection(("localhost", 6379), timeout=1):
             REDIS_UP = True
             record("Redis shared bus", True, "localhost:6379")
     except:
-        record("Redis shared bus", False, "localhost:6379 unreachable (using per-process stub)", warn=True)
+        record(
+            "Redis shared bus",
+            False,
+            "localhost:6379 unreachable (using per-process stub)",
+            warn=True,
+        )
 
     # Probe ES (9200)
     try:
@@ -168,9 +202,15 @@ def phase_services():
         ES_UP = r.status_code == 200
         record("Elasticsearch shared storage", ES_UP, "localhost:9200")
     except:
-        record("Elasticsearch shared storage", False, "localhost:9200 unreachable (using per-process stub)", warn=True)
-    
+        record(
+            "Elasticsearch shared storage",
+            False,
+            "localhost:9200 unreachable (using per-process stub)",
+            warn=True,
+        )
+
     return True
+
 
 # ─────────────────────────────────────────────
 # Phase 1: Authentication
@@ -183,27 +223,36 @@ def phase_auth() -> Optional[str]:
     test_user = f"e2e_{uuid.uuid4().hex[:6]}"
     test_pass = "AegisTest#2026!"
     try:
-        r = post("/auth/users/", json_body={"username": test_user,
-                                            "email": f"{test_user}@aegis.local",
-                                            "password": test_pass})
+        r = post(
+            "/auth/users/",
+            json_body={
+                "username": test_user,
+                "email": f"{test_user}@aegis.local",
+                "password": test_pass,
+            },
+        )
         if r.status_code == 200:
             record("User registration (POST /auth/users/)", True, f"user={test_user}")
         elif r.status_code == 400:
-            record("User registration (POST /auth/users/)", True,
-                   f"user={test_user} already exists (OK)")
+            record(
+                "User registration (POST /auth/users/)",
+                True,
+                f"user={test_user} already exists (OK)",
+            )
         else:
-            record("User registration (POST /auth/users/)", False,
-                   f"HTTP {r.status_code}: {r.text[:120]}")
+            record(
+                "User registration (POST /auth/users/)",
+                False,
+                f"HTTP {r.status_code}: {r.text[:120]}",
+            )
     except Exception as e:
         record("User registration", False, str(e))
 
     # 1b – Login with correct credentials
     try:
-        r = post("/auth/token",
-                 data={"username": test_user, "password": test_pass})
+        r = post("/auth/token", data={"username": test_user, "password": test_pass})
         passed = r.status_code == 200
-        record("Login with correct credentials", passed,
-               f"HTTP {r.status_code}")
+        record("Login with correct credentials", passed, f"HTTP {r.status_code}")
         if passed:
             token = r.json().get("access_token")
             record("JWT access_token present", bool(token), "")
@@ -212,11 +261,14 @@ def phase_auth() -> Optional[str]:
 
     # 1c – Login with wrong password
     try:
-        r = post("/auth/token",
-                 data={"username": test_user, "password": "wrongpassword"})
-        record("Login with wrong password returns 401",
-               r.status_code == 401,
-               f"HTTP {r.status_code}")
+        r = post(
+            "/auth/token", data={"username": test_user, "password": "wrongpassword"}
+        )
+        record(
+            "Login with wrong password returns 401",
+            r.status_code == 401,
+            f"HTTP {r.status_code}",
+        )
     except Exception as e:
         record("Login wrong password", False, str(e))
 
@@ -226,21 +278,27 @@ def phase_auth() -> Optional[str]:
             r = get("/auth/users/me", token=token)
             passed = r.status_code == 200
             body = r.json() if passed else {}
-            record("GET /auth/users/me with valid JWT", passed,
-                   f"username={body.get('username')}")
+            record(
+                "GET /auth/users/me with valid JWT",
+                passed,
+                f"username={body.get('username')}",
+            )
         except Exception as e:
             record("GET /auth/users/me", False, str(e))
 
         # 1e – /auth/users/me without token → 401 or 403
         try:
             r = get("/auth/users/me")
-            record("GET /auth/users/me without token → 401/403",
-                   r.status_code in (401, 403),
-                   f"HTTP {r.status_code}")
+            record(
+                "GET /auth/users/me without token → 401/403",
+                r.status_code in (401, 403),
+                f"HTTP {r.status_code}",
+            )
         except Exception as e:
             record("GET /auth/users/me no-auth", False, str(e))
 
     return token
+
 
 # ─────────────────────────────────────────────
 # Phase 2: Alert Ingestion
@@ -254,23 +312,31 @@ def phase_ingestion() -> list:
     try:
         r = post("/ingest", json_body=alert)
         passed = r.status_code == 200 and r.json().get("status") in ("published", "ok")
-        record("POST /ingest single alert", passed,
-               f"status={r.json().get('status') if r.status_code==200 else r.status_code}")
+        record(
+            "POST /ingest single alert",
+            passed,
+            f"status={r.json().get('status') if r.status_code == 200 else r.status_code}",
+        )
         if passed:
             ingested_ids.append(r.json().get("id"))
     except Exception as e:
         record("POST /ingest single alert", False, str(e))
 
     # 2b – Batch ingestion (10 alerts)
-    batch = [make_alert(src_ip=f"10.1.1.{i}", severity="MEDIUM", label="Brute Force")
-             for i in range(10)]
+    batch = [
+        make_alert(src_ip=f"10.1.1.{i}", severity="MEDIUM", label="Brute Force")
+        for i in range(10)
+    ]
     try:
         r = post("/ingest/batch", json_body=batch)
         passed = r.status_code == 200
         body = r.json() if passed else {}
         count = body.get("count", 0)
-        record("POST /ingest/batch (10 alerts)", passed and count == 10,
-               f"processed={count}")
+        record(
+            "POST /ingest/batch (10 alerts)",
+            passed and count == 10,
+            f"processed={count}",
+        )
     except Exception as e:
         record("POST /ingest/batch", False, str(e))
 
@@ -280,9 +346,11 @@ def phase_ingestion() -> list:
         r = post("/ingest", json_body=alert_no_ts)
         passed = r.status_code == 200
         body = r.json() if passed else {}
-        record("POST /ingest normalises missing timestamp",
-               passed and "timestamp" in body,
-               f"status={body.get('status')}")
+        record(
+            "POST /ingest normalises missing timestamp",
+            passed and "timestamp" in body,
+            f"status={body.get('status')}",
+        )
     except Exception as e:
         record("POST /ingest normalise timestamp", False, str(e))
 
@@ -295,10 +363,14 @@ def phase_ingestion() -> list:
                 errors += 1
         except Exception:
             errors += 1
-    record("Sustained ingestion (5 more alerts, no server error)",
-           errors == 0, f"errors={errors}")
+    record(
+        "Sustained ingestion (5 more alerts, no server error)",
+        errors == 0,
+        f"errors={errors}",
+    )
 
     return ingested_ids
+
 
 # ─────────────────────────────────────────────
 # Phase 3: Data Plane — Alerts + Incidents
@@ -315,8 +387,11 @@ def phase_data_plane():
         passed = r.status_code == 200
         body = r.json() if passed else []
         record("GET /alerts returns 200", passed, f"HTTP {r.status_code}")
-        record("GET /alerts returns list", isinstance(body, list),
-               f"type={type(body).__name__} len={len(body)}")
+        record(
+            "GET /alerts returns list",
+            isinstance(body, list),
+            f"type={type(body).__name__} len={len(body)}",
+        )
     except Exception as e:
         record("GET /alerts", False, str(e))
 
@@ -324,7 +399,11 @@ def phase_data_plane():
     try:
         r = get("/alerts?limit=5")
         passed = r.status_code == 200 and isinstance(r.json(), list)
-        record("GET /alerts?limit=5 works", passed, f"count={len(r.json()) if passed else '?'}")
+        record(
+            "GET /alerts?limit=5 works",
+            passed,
+            f"count={len(r.json()) if passed else '?'}",
+        )
     except Exception as e:
         record("GET /alerts?limit=5", False, str(e))
 
@@ -334,8 +413,11 @@ def phase_data_plane():
         passed = r.status_code == 200
         body = r.json() if passed else []
         record("GET /incidents returns 200", passed, f"HTTP {r.status_code}")
-        record("GET /incidents returns list", isinstance(body, list),
-               f"type={type(body).__name__} len={len(body)}")
+        record(
+            "GET /incidents returns list",
+            isinstance(body, list),
+            f"type={type(body).__name__} len={len(body)}",
+        )
     except Exception as e:
         record("GET /incidents", False, str(e))
 
@@ -358,12 +440,15 @@ def phase_data_plane():
     # 3f – GET /anomalies (if route exists)
     try:
         r = get("/anomalies")
-        record("GET /anomalies returns 200",
-               r.status_code == 200,
-               f"HTTP {r.status_code}",
-               warn=(r.status_code != 200))
+        record(
+            "GET /anomalies returns 200",
+            r.status_code == 200,
+            f"HTTP {r.status_code}",
+            warn=(r.status_code != 200),
+        )
     except Exception as e:
         record("GET /anomalies", False, str(e))
+
 
 # ─────────────────────────────────────────────
 # Phase 4: SOAR / Response Trigger Simulation
@@ -372,7 +457,7 @@ def phase_soar():
     section("Phase 4 · SOAR Trigger (CRITICAL Alert)")
     # Inject a CRITICAL severity alert designed to trigger SOAR escalation
     critical_alert = make_alert(
-        src_ip="192.0.2.1",    # TEST-NET — RFC 5737 safe
+        src_ip="192.0.2.1",  # TEST-NET — RFC 5737 safe
         dst_ip="10.0.0.1",
         proto="TCP",
         severity="CRITICAL",
@@ -384,17 +469,19 @@ def phase_soar():
     try:
         r = post("/ingest", json_body=critical_alert)
         passed = r.status_code == 200
-        record("CRITICAL alert ingested successfully", passed,
-               f"HTTP {r.status_code}")
+        record("CRITICAL alert ingested successfully", passed, f"HTTP {r.status_code}")
     except Exception as e:
         record("CRITICAL alert ingest", False, str(e))
 
     # Flood the same src_ip to trigger correlation → incident
     for i in range(15):
         try:
-            post("/ingest", json_body=make_alert(src_ip="192.0.2.1",
-                                                  severity="HIGH",
-                                                  label="SQL Injection Attempt"))
+            post(
+                "/ingest",
+                json_body=make_alert(
+                    src_ip="192.0.2.1", severity="HIGH", label="SQL Injection Attempt"
+                ),
+            )
         except Exception:
             pass
 
@@ -405,24 +492,27 @@ def phase_soar():
         r = get("/incidents")
         body = r.json() if r.status_code == 200 else []
         has_incident = any(
-            inc.get("src_ip") == "192.0.2.1" or
-            "SQL" in str(inc.get("label", "")) or
-            "SQL" in str(inc.get("attack_type", ""))
+            inc.get("src_ip") == "192.0.2.1"
+            or "SQL" in str(inc.get("label", ""))
+            or "SQL" in str(inc.get("attack_type", ""))
             for inc in body
         )
         # If Redis is up, we EXPECT incident propagation to work.
         # If Redis is down, we accept a warning.
         is_fail = REDIS_UP and not has_incident
-        record("Incident generated from CRITICAL flood",
-               has_incident,
-               f"incidents_total={len(body)}",
-               warn=(not has_incident and not REDIS_UP))
-        
+        record(
+            "Incident generated from CRITICAL flood",
+            has_incident,
+            f"incidents_total={len(body)}",
+            warn=(not has_incident and not REDIS_UP),
+        )
+
         if is_fail:
             # Manually fix the last result to be a FAIL instead of WARN
             results[-1]["status"] = "FAIL"
     except Exception as e:
         record("Incident check after CRITICAL flood", False, str(e))
+
 
 # ─────────────────────────────────────────────
 # Phase 5: WebSocket Live Events
@@ -436,7 +526,9 @@ def phase_websocket():
     async def ws_listen():
         nonlocal ws_error
         try:
-            async with websockets.connect(WS_URL, open_timeout=5, close_timeout=5) as ws:
+            async with websockets.connect(
+                WS_URL, open_timeout=5, close_timeout=5
+            ) as ws:
                 # Ping/pong keepalive
                 await ws.send("ping")
                 pong = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -466,13 +558,16 @@ def phase_websocket():
 
     event_received = any(k == "event" for k, _ in received)
     is_fail = REDIS_UP and not event_received
-    record("WebSocket live event received",
-           event_received,
-           f"{'event data received' if event_received else 'no broadcast in window'}",
-           warn=(not event_received and not REDIS_UP))
-    
+    record(
+        "WebSocket live event received",
+        event_received,
+        f"{'event data received' if event_received else 'no broadcast in window'}",
+        warn=(not event_received and not REDIS_UP),
+    )
+
     if is_fail:
         results[-1]["status"] = "FAIL"
+
 
 # ─────────────────────────────────────────────
 # Phase 6: Input Sanitisation / Security
@@ -486,8 +581,11 @@ def phase_security():
         r = post("/ingest", json_body=injection_alert)
         # API should either accept it (and sanitise internally) or return 422
         safe = r.status_code in (200, 422)
-        record("Injection attempt in src_ip doesn't crash server",
-               safe, f"HTTP {r.status_code}")
+        record(
+            "Injection attempt in src_ip doesn't crash server",
+            safe,
+            f"HTTP {r.status_code}",
+        )
     except Exception as e:
         record("Injection attempt handling", False, str(e))
 
@@ -496,29 +594,36 @@ def phase_security():
     big_alert["label"] = "A" * 100_000
     try:
         r = post("/ingest", json_body=big_alert)
-        record("Oversized payload handled without 500",
-               r.status_code != 500,
-               f"HTTP {r.status_code}")
+        record(
+            "Oversized payload handled without 500",
+            r.status_code != 500,
+            f"HTTP {r.status_code}",
+        )
     except Exception as e:
         record("Oversized payload", False, str(e))
 
     # 6c – Empty body to /ingest
     try:
         r = post("/ingest", json_body={})
-        record("Empty body to /ingest handled gracefully",
-               r.status_code in (200, 422),
-               f"HTTP {r.status_code}")
+        record(
+            "Empty body to /ingest handled gracefully",
+            r.status_code in (200, 422),
+            f"HTTP {r.status_code}",
+        )
     except Exception as e:
         record("Empty body to /ingest", False, str(e))
 
     # 6d – SQL injection in query param
     try:
         r = get("/alerts?limit=1 OR 1=1--")
-        record("SQL injection in query param handled",
-               r.status_code in (200, 422),
-               f"HTTP {r.status_code}")
+        record(
+            "SQL injection in query param handled",
+            r.status_code in (200, 422),
+            f"HTTP {r.status_code}",
+        )
     except Exception as e:
         record("SQL injection query param", False, str(e))
+
 
 # ─────────────────────────────────────────────
 # Final Report
@@ -547,23 +652,36 @@ def print_report():
         for r in warned:
             print(f"  {YELLOW}{WARN_ICON} {r['name']}{RESET}  {r['detail']}")
 
-    verdict = f"{GREEN}ALL TESTS PASSED{RESET}" if not failed else f"{RED}SOME TESTS FAILED{RESET}"
+    verdict = (
+        f"{GREEN}ALL TESTS PASSED{RESET}"
+        if not failed
+        else f"{RED}SOME TESTS FAILED{RESET}"
+    )
     print(f"\n  Verdict: {BOLD}{verdict}\n")
 
     # Write JSON report
     report_path = Path(__file__).parent.parent / "logs" / "e2e_report.json"
     report_path.parent.mkdir(exist_ok=True)
     with open(report_path, "w") as f:
-        json.dump({
-            "run_at": datetime.datetime.now(datetime.UTC).isoformat(),
-            "base_url": BASE_URL,
-            "summary": {"total": len(results), "passed": len(passed),
-                        "failed": len(failed), "warned": len(warned)},
-            "results": results
-        }, f, indent=2)
+        json.dump(
+            {
+                "run_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                "base_url": BASE_URL,
+                "summary": {
+                    "total": len(results),
+                    "passed": len(passed),
+                    "failed": len(failed),
+                    "warned": len(warned),
+                },
+                "results": results,
+            },
+            f,
+            indent=2,
+        )
     print(f"  JSON report → {report_path}\n")
 
     return len(failed) == 0
+
 
 # ─────────────────────────────────────────────
 # Entry Point
@@ -572,12 +690,16 @@ def main():
     global BASE_URL, WS_URL
 
     parser = argparse.ArgumentParser(description="AegisNet SIEM E2E Test Suite")
-    parser.add_argument("--base-url", default="http://localhost:8000",
-                        help="Base URL of the SIEM API")
+    parser.add_argument(
+        "--base-url", default="http://localhost:8000", help="Base URL of the SIEM API"
+    )
     args = parser.parse_args()
 
     BASE_URL = args.base_url.rstrip("/")
-    WS_URL = BASE_URL.replace("http://", "ws://").replace("https://", "wss://") + "/ws/events"
+    WS_URL = (
+        BASE_URL.replace("http://", "ws://").replace("https://", "wss://")
+        + "/ws/events"
+    )
 
     print(f"\n{BOLD}{CYAN}  AegisNet SIEM - End-to-End Test Suite{RESET}")
     print(f"  Target: {BASE_URL}")

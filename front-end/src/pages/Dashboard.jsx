@@ -14,7 +14,7 @@ const DashboardOverview = () => {
   const [liveIncidents, setLiveIncidents] = useState([]);
   
   // 3. Connect to WebSocket
-  const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:2345';
+  const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:2346';
   const wsUrl = import.meta.env.VITE_WS_URL || apiBase.replace(/^http/, 'ws') + '/ws/events';
   
   const handleMessage = useCallback((wsEvent) => {

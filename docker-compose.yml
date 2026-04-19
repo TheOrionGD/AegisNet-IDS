@@ -160,7 +160,7 @@ services:
       dockerfile: docker/Dockerfile
     container_name: cns-api
     restart: unless-stopped
-    command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "2345"]
+    command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "2346"]
     # env_file injects ALL variables from the root .env into the container.
     # The environment block below overrides specific values that differ inside
     # Docker (e.g. hostnames use Docker service names, not localhost).
@@ -169,7 +169,7 @@ services:
     environment:
       <<: *common-env
     ports:
-      - "2345:2345"
+      - "2346:2346"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -221,7 +221,7 @@ services:
       dockerfile: docker/Dockerfile
     container_name: cns-snort-bridge
     restart: unless-stopped
-    command: ["python", "core/snort_bridge.py", "http://api:2345", "/app/logs/alert.json"]
+    command: ["python", "core/snort_bridge.py", "http://api:2346", "/app/logs/alert.json"]
     env_file:
       - .env
     environment:

@@ -41,19 +41,23 @@ async def check_rate_limit(client_id: str = "default"):
     return True
 
 
-@router.get("/alerts", response_model=List[SecurityEvent], dependencies=[Depends(allow_analyst)])
+@router.get(
+    "/alerts", response_model=List[SecurityEvent], dependencies=[Depends(allow_analyst)]
+)
 async def get_alerts(
     limit: int = 50, service: AlertService = Depends(get_alert_service)
 ):
     """Retrieve normalized alerts (raw IDS + ML + system)
-    
+
     **Access Control:** Analyst, Admin
     """
     try:
         return await service.get_normalized_alerts(limit=limit)
     except Exception as e:
         logger.error(f"Error fetching alerts: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch alerts. Please try again.")
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch alerts. Please try again."
+        )
 
 
 @router.get("/timeline")
@@ -130,14 +134,14 @@ async def ingest_batch(alerts: List[Dict[str, Any]]):
         alert["source"] = "snort"
 
         try:
-            processed = await process_siem_event(alert)
-            processed_events.append(processed)
+            event = await process_siem_event(alert)
+            processed_events.append(event)
+            processed += 1
         except Exception as e:
             import logging
 
             logging.getLogger(__name__).error(f"Batch pipeline error: {e}")
             await bus.publish("raw_alert", alert)
-        processed += 1
 
     return {
         "status": "processed",
