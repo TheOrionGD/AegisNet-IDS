@@ -79,7 +79,6 @@ demo_output/
 generated_rules_metadata.json
 
 # --- Machine Learning Models ---
-models/*.joblib
 models/*.pkl
 models/*.h5
 models/*.onnx
