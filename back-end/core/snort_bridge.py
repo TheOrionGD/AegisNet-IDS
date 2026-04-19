@@ -195,8 +195,13 @@ class SnortAlertHandler(FileSystemEventHandler):
                     continue
                 try:
                     alert = json.loads(line)
-                    if isinstance(alert, str):  # This is the "Double Encoding" fix
+                    if isinstance(alert, str):  # Double Encoding fix
                         alert = json.loads(alert)
+                    
+                    # --- ADD THIS LINE ---
+                    batch.append(alert) 
+                    # ---------------------
+
                 except Exception as e:
                     logger.error(f"Failed to parse line: {e}")
                     continue
