@@ -4,7 +4,7 @@ import { ShieldAlert, Search, Filter, AlertTriangle, Clock, Server, Monitor } fr
 import Badge from '../components/UI/Badge';
 
 const AlertsPage = () => {
-  const { data: alerts, isLoading } = useAlerts();
+  const { data: alerts, isLoading, isError, error } = useAlerts();
   const [searchTerm, setSearchTerm] = useState('');
   const [filterSeverity, setFilterSeverity] = useState('ALL');
 
@@ -23,6 +23,17 @@ const AlertsPage = () => {
       <div className="h-full flex flex-col items-center justify-center space-y-4 text-metalsilver-muted font-mono animate-pulse uppercase tracking-[0.3em] font-black">
         <Server className="text-metalgold-main animate-bounce" size={48} />
         <span>Syncing Tactical Alert Buffer...</span>
+      </div>
+    );
+  }
+
+  if (isError) {
+    const errorMessage = error?.userMessage || error?.message || 'Backend unreachable or returned an error.';
+    return (
+      <div className="h-full flex flex-col items-center justify-center space-y-4 font-mono uppercase tracking-[0.2em]">
+        <ShieldAlert className="text-m-critical" size={48} />
+        <span className="text-m-critical font-black text-sm">Alert Feed Unavailable</span>
+        <p className="text-[10px] text-metalsilver-muted font-bold text-center max-w-md">{errorMessage}</p>
       </div>
     );
   }

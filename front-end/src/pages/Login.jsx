@@ -63,7 +63,7 @@ const Login = () => {
           <div className="w-16 h-16 rounded-2xl bg-metalgold-main/10 border border-metalgold-main/20 flex items-center justify-center mb-4 shadow-xl shadow-metalgold-main/5 group">
             <Shield className="text-metalgold-main group-hover:scale-110 transition-transform duration-500" size={32} />
           </div>
-          <h1 className="text-3xl font-black text-metaltxt-primary tracking-[0.2em] uppercase">CNS AegisNet</h1>
+          <h1 className="text-3xl font-black text-metaltxt-primary tracking-[0.2em] uppercase">AegisNet</h1>
           <p className="text-metalsilver-muted text-[10px] font-bold uppercase tracking-[0.4em] mt-2">Tactical Intelligence Portal</p>
         </div>
 

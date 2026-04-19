@@ -1,5 +1,6 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 import asyncio
 import json
 import datetime
@@ -25,8 +26,14 @@ from core.siem_pipeline import get_siem_pipeline
 from dotenv import load_dotenv
 import time
 
-# Load environment variables
-load_dotenv()
+# ── Root .env resolution ───────────────────────────────────────────────────────
+# This file lives at  <project-root>/back-end/api/main.py
+#   parents[0] = back-end/api/
+#   parents[1] = back-end/
+#   parents[2] = project root  (E:\PROJECTS\CNS)
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(dotenv_path=_PROJECT_ROOT / ".env", override=False)
+# ──────────────────────────────────────────────────────────────────────────────
 
 import logging
 
@@ -34,48 +41,26 @@ logger = logging.getLogger(__name__)
 
 
 # Initialize Infrastructure on Startup with Retry Logic
-def verify_infrastructure(max_retries=3, delay=1):
-    """Ensures all backend services (Postgres, Redis, ES) are reachable."""
-    # First, try to get engine with current config (may be PostgreSQL from .env)
-    engine = get_engine()
-    logger.info(f"[STARTUP] Initial engine URL: {engine.url}")
+async def verify_infrastructure(max_retries=3, delay=1):
+    """Ensures MongoDB Atlas is reachable."""
     db_ready = False
 
-    # 1. Database (PostgreSQL or fallback SQLite)
+    # 1. Database (MongoDB Atlas)
     for i in range(max_retries):
         try:
-            Base.metadata.create_all(bind=engine)
-            logger.info("[STARTUP] Database connected and schema verified.")
+            await connect_to_mongo()
+            logger.info("[STARTUP] MongoDB Atlas connected.")
             db_ready = True
             break
         except Exception as e:
             if i < max_retries - 1:
                 logger.warning(
-                    f"[STARTUP] Database not ready ({i + 1}/3), retrying in 1s..."
+                    f"[STARTUP] MongoDB not ready ({i + 1}/3), retrying in 1s... {e}"
                 )
-                time.sleep(delay)
+                await asyncio.sleep(delay)
             else:
-                logger.error("[STARTUP] Could not connect to database.")
-                database_url = engine.url  # Use the engine we already have
-                logger.info(f"[STARTUP] Current database URL: {database_url}")
-                if database_url.drivername.startswith("postgresql"):
-                    fallback_path = (
-                        Path(__file__).resolve().parents[1] / "data" / "cns.db"
-                    )
-                    # Create SQLite engine directly
-                    from sqlalchemy import create_engine
-
-                    sqlite_url = f"sqlite:///{fallback_path.as_posix()}"
-                    engine = create_engine(sqlite_url)
-                    logger.warning(
-                        f"[STARTUP] Falling back to local SQLite database at {fallback_path}."
-                    )
-                    logger.info(f"[STARTUP] Created SQLite engine: {engine.url}")
-                    Base.metadata.create_all(bind=engine)
-                    logger.info("[STARTUP] Local SQLite database initialized.")
-                    db_ready = True
-                else:
-                    raise e
+                logger.error(f"[STARTUP] Could not connect to MongoDB Atlas: {e}")
+                raise e
 
     # 2. Redis & Elasticsearch check will happen inside services on instantiation
     # but we can do a quick check here to log status
@@ -87,10 +72,10 @@ def verify_infrastructure(max_retries=3, delay=1):
     except Exception as e:
         logger.error(f"[STARTUP] Storage System failure: {e}")
 
-    return engine
+    return db_ready
 
 
-engine = verify_infrastructure()
+engine = None  # Placeholder, will be set in startup
 
 app = FastAPI(
     title="CNS SIEM API",
@@ -98,14 +83,64 @@ app = FastAPI(
     version="6.0.0",
 )
 
-# CORS
+# CORS — allow dev server and backend-host-accessed frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:1234", "http://localhost:3000", "http://127.0.0.1:1234"],
+    allow_origins=[
+        "http://localhost:1234",
+        "http://localhost:3000",
+        "http://127.0.0.1:1234",
+        "http://10.169.17.117:1234",  # Frontend accessed via backend host IP
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+
+class EnsureCORSHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Fallback middleware that ensures CORS headers are present on all responses,
+    including error responses from exception handlers.
+    """
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        origin = request.headers.get("origin")
+        allowed_origins = [
+            "http://localhost:1234",
+            "http://localhost:3000",
+            "http://127.0.0.1:1234",
+            "http://10.169.17.117:1234",
+        ]
+        # If the request origin is in our allowed list and the header is missing, add it
+        if (
+            origin in allowed_origins
+            and "access-control-allow-origin" not in response.headers
+        ):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
+
+app.add_middleware(EnsureCORSHeadersMiddleware)
+
+
+# Global exception handler — ensures CORS headers are always present on 500 responses
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        f"Unhandled exception on {request.method} {request.url}: {exc}", exc_info=True
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. Please try again later."},
+    )
 
 
 # Global task tracker
@@ -122,6 +157,9 @@ async def broadcast_incident(incident: dict):
 
 @app.on_event("startup")
 async def startup_event():
+    # 0. Verify Infrastructure (DB, Storage, etc.)
+    await verify_infrastructure()
+
     # 1. Initialize Persistent Event Bus
     await bus.initialize()
 
@@ -131,23 +169,31 @@ async def startup_event():
     background_tasks.add(bus_task)
     bus_task.add_done_callback(background_tasks.discard)
 
-    # 3. Initialize Realtime ML Engine
-    try:
-        engine = get_realtime_engine()
-        engine.load_models()
-        logger.info("Realtime ML Engine initialized")
-    except Exception as e:
-        logger.error(f"ML Engine initialization failed: {e}")
+    # 3. Initialize heavy components (ML Engine, SIEM Pipeline) in background
+    async def init_ml_engine():
+        try:
+            engine = get_realtime_engine()
+            engine.load_models()
+            logger.info("Realtime ML Engine initialized")
+        except Exception as e:
+            logger.error(f"ML Engine initialization failed: {e}", exc_info=True)
 
-    # 4. Initialize SIEM Pipeline (Snort→ES→ML→WS)
-    try:
-        pipeline = get_siem_pipeline()
-        pipeline.initialize()
-        logger.info("SIEM Pipeline initialized")
-    except Exception as e:
-        logger.error(f"SIEM Pipeline initialization failed: {e}")
+    async def init_siem_pipeline():
+        try:
+            pipeline = get_siem_pipeline()
+            pipeline.initialize()
+            logger.info("SIEM Pipeline initialized")
+        except Exception as e:
+            logger.error(f"SIEM Pipeline initialization failed: {e}", exc_info=True)
 
-    logger.info("CNS SIEM API: Persistence layer ready.")
+    ml_task = asyncio.create_task(init_ml_engine())
+    pipeline_task = asyncio.create_task(init_siem_pipeline())
+    background_tasks.add(ml_task)
+    background_tasks.add(pipeline_task)
+    ml_task.add_done_callback(background_tasks.discard)
+    pipeline_task.add_done_callback(background_tasks.discard)
+
+    logger.info("CNS SIEM API: Persistence layer ready. Background services starting.")
 
 
 @app.on_event("shutdown")

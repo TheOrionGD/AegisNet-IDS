@@ -161,6 +161,11 @@ services:
     container_name: cns-api
     restart: unless-stopped
     command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "2345"]
+    # env_file injects ALL variables from the root .env into the container.
+    # The environment block below overrides specific values that differ inside
+    # Docker (e.g. hostnames use Docker service names, not localhost).
+    env_file:
+      - .env
     environment:
       <<: *common-env
     ports:
@@ -179,6 +184,8 @@ services:
     container_name: cns-analysis
     restart: unless-stopped
     command: ["python", "core/analysis_worker.py"]
+    env_file:
+      - .env
     environment:
       <<: *common-env
     volumes:
@@ -197,6 +204,8 @@ services:
     command: ["python", "core/soar_worker.py"]
     cap_add:
       - NET_ADMIN
+    env_file:
+      - .env
     environment:
       <<: *common-env
       SAFE_MODE: ${SOAR_SAFE_MODE:-true}
@@ -213,6 +222,8 @@ services:
     container_name: cns-snort-bridge
     restart: unless-stopped
     command: ["python", "core/snort_bridge.py", "http://api:2345", "/app/logs/alert.json"]
+    env_file:
+      - .env
     environment:
       <<: *common-env
     volumes:
@@ -224,10 +235,17 @@ services:
   frontend:
     profiles: ["core"]
     build:
+      # VITE_ variables are baked into the JS bundle at BUILD time.
+      # Docker BuildKit passes them as build args via the env_file below.
+      # Add any new VITE_ vars to .env and rebuild the image.
       context: .
       dockerfile: docker/Dockerfile.frontend
     container_name: cns-frontend
     restart: unless-stopped
+    # env_file is still useful here for any runtime env vars consumed by the
+    # Nginx config or entrypoint script (non-VITE_ vars).
+    env_file:
+      - .env
     ports:
       - "8080:80"
     networks:

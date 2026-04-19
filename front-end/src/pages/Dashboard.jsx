@@ -8,7 +8,7 @@ import Badge from '../components/UI/Badge';
 
 const DashboardOverview = () => {
   // 1. Fetch historical incidents via React Query
-  const { data: initialIncidents, isLoading } = useIncidents();
+  const { data: initialIncidents, isLoading, isError, error } = useIncidents();
   
   // 2. Real-time stream state
   const [liveIncidents, setLiveIncidents] = useState([]);
@@ -53,7 +53,25 @@ const DashboardOverview = () => {
     return unique.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   }, [initialIncidents, liveIncidents]);
 
-  if (isLoading && liveIncidents.length === 0) return <div className="h-screen flex items-center justify-center text-metalsilver-muted font-mono animate-pulse uppercase tracking-[0.3em] font-black">Initializing Aegis Tactical View...</div>;
+  if (isLoading && liveIncidents.length === 0) {
+    return (
+      <div className="h-screen flex items-center justify-center text-metalsilver-muted font-mono animate-pulse uppercase tracking-[0.3em] font-black">
+        Initializing Aegis Tactical View...
+      </div>
+    );
+  }
+
+  if (isError && liveIncidents.length === 0) {
+    const errorMessage = error?.userMessage || error?.message || 'Could not reach the backend. Check CORS configuration and server status.';
+    return (
+      <div className="h-screen flex flex-col items-center justify-center space-y-4 font-mono uppercase tracking-[0.2em]">
+        <div className="text-m-critical font-black text-sm">Tactical Feed Unavailable</div>
+        <p className="text-[10px] text-metalsilver-muted font-bold max-w-md text-center">
+          {errorMessage}
+        </p>
+      </div>
+    );
+  }
 
   const highCriticalCount = allIncidents.filter(i => ['HIGH', 'CRITICAL'].includes((i.severity || '').toUpperCase())).length;
 

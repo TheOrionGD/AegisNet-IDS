@@ -53,11 +53,21 @@ class AlertService:
             )
         return normalized
 
-    def get_top_ips(self, limit: int = 10) -> List[Dict[str, Any]]:
-        return self.repository.get_top_ips(limit=limit)
+    async def get_top_ips(self, limit: int = 10) -> List[Dict[str, Any]]:
+        try:
+            return await self.repository.get_top_ips(limit=limit)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error fetching top IPs: {e}")
+            return []
 
-    def get_timeline(self, hours: int = 24) -> List[Dict[str, Any]]:
-        return self.repository.get_timeline(hours=hours)
+    async def get_timeline(self, hours: int = 24) -> List[Dict[str, Any]]:
+        try:
+            return await self.repository.get_timeline(hours=hours)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error fetching timeline: {e}")
+            return []
 
     def ingest_alert(self, alert_data: Dict[str, Any]) -> str:
         """

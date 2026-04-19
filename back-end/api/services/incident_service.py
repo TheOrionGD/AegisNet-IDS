@@ -10,11 +10,12 @@ class IncidentService:
     def __init__(self, repository: BaseRepository):
         self.repository = repository
 
-    def get_incidents(self, limit: int = 50) -> List[Incident]:
+    async def get_incidents(self, limit: int = 50) -> List[Incident]:
+        """Fetch and normalize incidents from the repository."""
         try:
-            raw_incidents = self.repository.get_incidents(limit=limit)
+            raw_incidents = await self.repository.get_incidents(limit=limit)
         except Exception as e:
-            logger.error(f"Error fetching incidents from repo: {e}")
+            logger.error(f"Error fetching incidents from repo: {e}", exc_info=True)
             return []
 
         results = []
