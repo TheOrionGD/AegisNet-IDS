@@ -194,11 +194,12 @@ class SnortAlertHandler(FileSystemEventHandler):
                 if not line.strip():
                     continue
                 try:
-                    alert = json.loads(line.strip())
-                    normalized = self._normalize_alert(alert)
-                    batch.append(normalized)
+                    alert = json.loads(line)
+                    if isinstance(alert, str):  # This is the "Double Encoding" fix
+                        alert = json.loads(alert)
                 except Exception as e:
-                    logger.error(f"Error parsing Snort JSON: {e}")
+                    logger.error(f"Failed to parse line: {e}")
+                    continue
 
             if batch:
                 if self._forward_batch(batch):
