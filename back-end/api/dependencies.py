@@ -4,10 +4,15 @@ from .services.alert_service import AlertService
 from .services.incident_service import IncidentService
 from .services.anomaly_service import AnomalyService
 from .models.database import get_database, connect_to_mongo
-from config_loader import load_config
 import logging
+import os
+from dotenv import load_dotenv
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(dotenv_path=_PROJECT_ROOT / ".env", override=False)
 
 
 async def get_repository() -> MongoRepository:
