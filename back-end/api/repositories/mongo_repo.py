@@ -30,10 +30,15 @@ class MongoRepository(BaseRepository):
         cursor = collection.find().sort("timestamp", -1).limit(limit)
         anomalies = []
         async for anomaly in cursor:
+            try:
+                ts = anomaly.get("timestamp")
+                timestamp = ts.isoformat() if ts else ""
+            except Exception:
+                timestamp = ""
             anomalies.append(
                 {
                     "id": str(anomaly["_id"]),
-                    "timestamp": anomaly["timestamp"].isoformat(),
+                    "timestamp": timestamp,
                     "source": "ML_ENGINE",
                     "anomaly_score": anomaly.get("score", 0.0),
                     "model_type": "Isolation Forest",

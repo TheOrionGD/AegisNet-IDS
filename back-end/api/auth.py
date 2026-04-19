@@ -128,6 +128,18 @@ async def get_current_user(
     user_doc = await db["users"].find_one({"username": token_data.username})
     if user_doc is None:
         raise credentials_exception
+    
+    # Validate email domain - only @aegis.net allowed
+    email = user_doc.get("email", "")
+    if not email.endswith("@aegis.net"):
+        logger.warning(
+            f"UNAUTHORIZED_DOMAIN: User {user_doc.get('username')} with email {email} is not from @aegis.net domain"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access restricted to @aegis.net domain only"
+        )
+    
     return user_doc
 
 

@@ -5,6 +5,7 @@ from ..dependencies import get_alert_service
 from ..services.alert_service import AlertService
 from ..models.security_event import SecurityEvent
 from ..ws_manager import manager
+from ..auth_guards import allow_analyst, allow_admin
 
 from core.event_bus import bus
 from core.siem_pipeline import get_siem_pipeline, process_siem_event, process_siem_batch
@@ -40,11 +41,14 @@ async def check_rate_limit(client_id: str = "default"):
     return True
 
 
-@router.get("/alerts", response_model=List[SecurityEvent])
+@router.get("/alerts", response_model=List[SecurityEvent], dependencies=[Depends(allow_analyst)])
 async def get_alerts(
     limit: int = 50, service: AlertService = Depends(get_alert_service)
 ):
-    """Retrieve normalized alerts (raw IDS + ML + system)"""
+    """Retrieve normalized alerts (raw IDS + ML + system)
+    
+    **Access Control:** Analyst, Admin
+    """
     try:
         return await service.get_normalized_alerts(limit=limit)
     except Exception as e:

@@ -17,17 +17,23 @@ load_dotenv(dotenv_path=_PROJECT_ROOT / ".env", override=False)
 
 async def get_repository() -> MongoRepository:
     """Get MongoDB repository, connecting if necessary."""
-    db = get_database()
-    if db is None:
-        logger.warning("[deps] DB not connected — attempting reconnect...")
-        await connect_to_mongo()
+    try:
         db = get_database()
         if db is None:
-            logger.error("[deps] Database connection unavailable after retry")
-            raise HTTPException(
-                status_code=503, detail="Database connection unavailable"
-            )
-    return MongoRepository()
+            logger.warning("[deps] DB not connected — attempting reconnect...")
+            await connect_to_mongo()
+            db = get_database()
+            if db is None:
+                logger.error("[deps] Database connection unavailable after retry")
+                raise HTTPException(
+                    status_code=503, detail="Database connection unavailable"
+                )
+        return MongoRepository()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[deps] Error getting repository: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Database error: {str(e)}")
 
 
 async def get_alert_service() -> AlertService:
