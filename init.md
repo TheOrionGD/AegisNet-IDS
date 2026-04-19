@@ -25,7 +25,7 @@ sudo systemctl status postgresql
 
 If you need to use the repo’s default DB env:
 ```bash
-export DATABASE_URL="postgresql://<user>:<pass>@localhost:5432/<dbname>"
+export DATABASE_URL="postgresql://<user>:<pass>@localhost:5433/<dbname>"
 ```
 
 #### Elasticsearch

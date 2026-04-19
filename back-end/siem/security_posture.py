@@ -62,7 +62,7 @@ class SecurityPostureEngine:
 
     def __init__(
         self,
-        db_path: str = "data/siem.db",
+        db_path: str = "data/cns.db",
         lookback_hours: int = 24,
     ):
         self.db_path = Path(db_path)

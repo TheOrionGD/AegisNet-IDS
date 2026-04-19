@@ -47,7 +47,7 @@ class ThreatHuntingEngine:
     STEALTH_PORT_THRESHOLD = 10
     STEALTH_SPREAD_MINUTES = 45
 
-    def __init__(self, db_path: str = "data/siem.db"):
+    def __init__(self, db_path: str = "data/cns.db"):
         self.db_path = Path(db_path)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -178,9 +178,7 @@ class ThreatHuntingEngine:
                 # Build path: predecessors → node → successors
                 predecessors = list(G.predecessors(node))
                 successors = list(G.successors(node))
-                confidence = min(
-                    1.0, (in_deg + out_deg) / 10.0
-                )
+                confidence = min(1.0, (in_deg + out_deg) / 10.0)
                 detail = {
                     "pivot_ip": node,
                     "attacked_from": predecessors[:5],
@@ -227,8 +225,9 @@ class ThreatHuntingEngine:
             mean_interval = float(diffs.mean())
             if jitter < self.BEACON_JITTER_THRESHOLD_SECONDS and mean_interval > 0:
                 confidence = min(
-                    1.0, (1.0 - jitter / self.BEACON_JITTER_THRESHOLD_SECONDS)
-                    * min(1.0, len(grp) / 20.0)
+                    1.0,
+                    (1.0 - jitter / self.BEACON_JITTER_THRESHOLD_SECONDS)
+                    * min(1.0, len(grp) / 20.0),
                 )
                 results.append(
                     self._make_result(

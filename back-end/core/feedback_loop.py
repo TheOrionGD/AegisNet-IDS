@@ -50,7 +50,7 @@ class FeedbackLoop:
 
     def __init__(
         self,
-        db_path: str = "data/siem.db",
+        db_path: str = "data/cns.db",
         threshold_config_path: str = "data/adaptive_thresholds.json",
         initial_threshold: float = -0.3,
     ):
@@ -70,8 +70,7 @@ class FeedbackLoop:
         self._learning_engine = None
 
         logger.info(
-            f"FeedbackLoop initialized. "
-            f"Current threshold={self.current_threshold:.3f}"
+            f"FeedbackLoop initialized. Current threshold={self.current_threshold:.3f}"
         )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -105,9 +104,7 @@ class FeedbackLoop:
         """
         label = label.upper()
         if label not in VALID_LABELS:
-            raise ValueError(
-                f"Invalid label '{label}'. Must be one of {VALID_LABELS}"
-            )
+            raise ValueError(f"Invalid label '{label}'. Must be one of {VALID_LABELS}")
 
         record = {
             "id": str(uuid.uuid4()),

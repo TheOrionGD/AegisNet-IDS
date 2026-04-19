@@ -14,7 +14,7 @@
 
 
 x-common-env: &common-env
-  DATABASE_URL: ${DATABASE_URL:-postgresql://cns_user:OrionGD@postgres:5432/cns_siem}
+  DATABASE_URL: ${DATABASE_URL:-postgresql://cns_user:OrionGD@postgres:5433/cns_siem}
   ELASTICSEARCH_URL: http://elasticsearch:9200
   REDIS_URL: redis://redis:6379
   KAFKA_BOOTSTRAP_SERVERS: kafka:29092
@@ -37,7 +37,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-OrionGD}
       POSTGRES_DB: cns_siem
     ports:
-      - "5432:5432" # Allows native Windows python scripts to connect
+      - "5433:5432" # Allows native Windows python scripts to connect
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql

@@ -236,11 +236,15 @@ export const TimelinePage = () => {
 
   const chartData = useMemo(() => {
     if (!timeline || !Array.isArray(timeline)) return [];
-    return timeline.map(item => ({
+    const validData = timeline.filter(item => item.time_bucket && item.volume != null);
+    if (validData.length === 0) return [];
+    return validData.map(item => ({
       time: item.time_bucket,
       count: item.volume
     }));
   }, [timeline]);
+
+  const hasData = chartData && chartData.length > 0;
 
   if (isLoading) return <div className="h-full flex items-center justify-center text-metalsilver-muted font-mono animate-pulse uppercase tracking-widest font-black">Reconstructing Log Packets...</div>;
 
@@ -254,6 +258,11 @@ export const TimelinePage = () => {
 
       <div className="soc-card p-6 h-96">
         <h3 className="text-xs font-black text-metalsilver-main uppercase mb-6 tracking-[0.2em]">24-Hour Event Density</h3>
+        {!hasData ? (
+          <div className="h-full flex items-center justify-center text-metalsilver-muted border border-dashed border-metal-border rounded-xl bg-metalbg-secondary/20">
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] font-black">Link Pending...</p>
+          </div>
+        ) : (
         <ResponsiveContainer width="100%" height="100%" minWidth={0}>
           <AreaChart data={chartData}>
             <defs>
@@ -277,24 +286,31 @@ export const TimelinePage = () => {
             <Area type="monotone" dataKey="count" stroke="#D4AF37" fillOpacity={1} fill="url(#colorCount)" strokeWidth={3} />
           </AreaChart>
         </ResponsiveContainer>
+        )}
       </div>
       
       <div className="soc-card p-6">
          <h3 className="text-xs font-black text-metalsilver-main uppercase mb-8 tracking-[0.2em]">Tactical Milestone Stream</h3>
-         <div className="space-y-10 relative before:absolute before:inset-y-0 before:left-[11px] before:w-0.5 before:bg-metal-border/30">
+         {!hasData ? (
+           <div className="text-center py-8 text-metalsilver-muted text-[10px] font-black uppercase tracking-widest">
+             Awaiting Data...
+           </div>
+         ) : (
+          <div className="space-y-10 relative before:absolute before:inset-y-0 before:left-[11px] before:w-0.5 before:bg-metal-border/30">
             {chartData.slice(-6).reverse().map((d, i) => (
               <div key={i} className="relative pl-12 group">
                 <div className="absolute left-[-1.5px] top-1.5 w-7 h-7 rounded-full bg-metalbg-secondary border-2 border-metal-border group-hover:border-metalgold-main flex items-center justify-center z-10 transition-colors shadow-2xl">
                   <Zap size={12} className="text-metalsilver-muted group-hover:text-metalgold-main" />
                 </div>
-                <div className="flex flex-col">
+<div className="flex flex-col">
                   <span className="text-[10px] font-mono font-black text-metalgold-main/60 uppercase tracking-widest mb-1">{d.time}</span>
                   <span className="text-sm font-black text-metaltxt-primary uppercase tracking-tight">Signal Burst Identified</span>
                   <p className="text-[11px] text-metalsilver-muted font-bold mt-1">Detected <span className="text-metalsilver-main font-black">{d.count}</span> security events during this operational window.</p>
                 </div>
               </div>
             ))}
-         </div>
+          </div>
+         )}
       </div>
     </div>
   );

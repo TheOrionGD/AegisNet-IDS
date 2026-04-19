@@ -82,7 +82,7 @@ class AdaptiveLearningEngine:
     def __init__(
         self,
         models_dir: str = "models",
-        db_path: str = "data/siem.db",
+        db_path: str = "data/cns.db",
         rolling_window: int = 500,
         min_samples_to_retrain: int = 20,
         base_contamination: float = 0.1,
@@ -147,9 +147,7 @@ class AdaptiveLearningEngine:
         True-Positive examples.  Returns the new ModelVersion or None.
         """
         with self._lock:
-            labeled = [
-                s for s in self._sample_buffer if s["label"] != "unknown"
-            ]
+            labeled = [s for s in self._sample_buffer if s["label"] != "unknown"]
 
         if len(labeled) < self.min_samples_to_retrain:
             logger.info(
@@ -163,9 +161,7 @@ class AdaptiveLearningEngine:
     def force_retrain(self) -> ModelVersion:
         """Force retraining regardless of buffer size (uses all available data)."""
         with self._lock:
-            labeled = [
-                s for s in self._sample_buffer if s["label"] != "unknown"
-            ]
+            labeled = [s for s in self._sample_buffer if s["label"] != "unknown"]
         if not labeled:
             # Retrain on the full buffer treating everything as normal
             with self._lock:
@@ -214,7 +210,10 @@ class AdaptiveLearningEngine:
         Returns value in [0, 1]:  0 = no drift, 1 = maximum drift.
         """
         current_model_path = self._active_model_path()
-        if not Path(current_model_path).exists() or not Path(reference_model_path).exists():
+        if (
+            not Path(current_model_path).exists()
+            or not Path(reference_model_path).exists()
+        ):
             return 0.0
 
         try:
@@ -244,9 +243,7 @@ class AdaptiveLearningEngine:
           - Clamp to [0.01, 0.40]
         """
         delta = (fn_rate - fp_rate) * 0.05
-        new_contamination = float(
-            np.clip(self.base_contamination + delta, 0.01, 0.40)
-        )
+        new_contamination = float(np.clip(self.base_contamination + delta, 0.01, 0.40))
         logger.info(
             f"Contamination adjusted: {self.base_contamination:.3f} → "
             f"{new_contamination:.3f}  (fp_rate={fp_rate:.3f}, fn_rate={fn_rate:.3f})"
@@ -272,9 +269,7 @@ class AdaptiveLearningEngine:
             if not feat_vals:
                 continue
             X_rows.append(feat_vals)
-            y_true.append(
-                -1 if sample["label"] == "confirmed_true_positive" else 1
-            )
+            y_true.append(-1 if sample["label"] == "confirmed_true_positive" else 1)
 
         if not X_rows:
             raise RuntimeError("All samples have empty feature dicts")
@@ -307,12 +302,8 @@ class AdaptiveLearningEngine:
         y_true_bin = (y_true_arr == -1).astype(int)
         y_pred_bin = (y_pred == -1).astype(int)
 
-        precision = float(
-            precision_score(y_true_bin, y_pred_bin, zero_division=0)
-        )
-        recall = float(
-            recall_score(y_true_bin, y_pred_bin, zero_division=0)
-        )
+        precision = float(precision_score(y_true_bin, y_pred_bin, zero_division=0))
+        recall = float(recall_score(y_true_bin, y_pred_bin, zero_division=0))
 
         # Bump version
         self._version_counter += 1

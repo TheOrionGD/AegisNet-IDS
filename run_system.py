@@ -24,6 +24,9 @@ import requests
 # Load environment variables from .env if present
 load_dotenv()
 
+# Ensure logs directory exists
+Path('logs').mkdir(exist_ok=True)
+
 # Setup logging to file and console
 logging.basicConfig(
     level=logging.INFO,

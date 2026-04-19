@@ -6,19 +6,24 @@ import Card from '../UI/Card';
 const AnomalyChart = ({ data }) => {
   // Format data for chart (Hook must be called before early return)
   const chartData = useMemo(() => {
-    if (!data) return [];
+    if (!data || !Array.isArray(data)) return [];
     return data.reduce((acc, item) => {
-      const timestamp = item?.timestamp || item?.time || item?.created_at;
-      const date = new Date(timestamp);
-      if (Number.isNaN(date.getTime())) return acc;
-      return [...acc, {
-        time: format(date, 'HH:mm:ss'),
-        score: (item.ml_score || 0) * 100,
-      }];
+      try {
+        const timestamp = item?.timestamp || item?.time || item?.created_at || item?.start_time || item?.end_time;
+        if (!timestamp) return acc;
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) return acc;
+        return [...acc, {
+          time: format(date, 'HH:mm:ss'),
+          score: (item.ml_score || item.confidence || 0) * 100,
+        }];
+      } catch {
+        return acc;
+      }
     }, []).reverse().slice(-30);
   }, [data]);
 
-  if (!data || data.length === 0) {
+  if (!chartData || chartData.length === 0) {
     return (
       <Card title="Temporal Anomaly Density" subtitle="AWAITING VECTOR SIGNALS">
         <div className="h-64 flex items-center justify-center text-metalsilver-muted border border-dashed border-metal-border rounded-xl bg-metalbg-secondary/20">
