@@ -15,8 +15,8 @@ from .routes import (
     analysis,
     websocket as ws_routes,
 )
-from .dependencies import get_alert_service, get_incident_service, get_engine
-from .models.database import Base
+from .dependencies import get_alert_service, get_incident_service
+from .models.database import connect_to_mongo
 from .ws_manager import manager
 from core.event_bus import bus
 from core.worker import worker
