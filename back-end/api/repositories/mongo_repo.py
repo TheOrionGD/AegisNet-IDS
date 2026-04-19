@@ -1,0 +1,115 @@
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
+from ..models.database import get_database
+from .base_repo import BaseRepository
+
+class MongoRepository(BaseRepository):
+    def __init__(self):
+        self.db: AsyncIOMotorDatabase = get_database()
+
+    async def get_alerts(self, limit: int = 100) -> List[Dict[str, Any]]:
+        collection = self.db.security_events
+        cursor = collection.find().sort("timestamp", -1).limit(limit)
+        alerts = []
+        async for event in cursor:
+            alerts.append({
+                "id": str(event["_id"]),
+                "timestamp": event["timestamp"].isoformat(),
+                "source": event.get("source", ""),
+                "type": event.get("event_type", ""),
+                "severity": self._severity_to_string(event.get("severity", 1)),
+                "message": event.get("message", ""),
+                "raw_payload": event.get("raw_data", {})
+            })
+        return alerts
+
+    async def get_incidents(self, limit: int = 100) -> List[Dict[str, Any]]:
+        collection = self.db.incidents
+        cursor = collection.find().sort("created_at", -1).limit(limit)
+        incidents = []
+        async for incident in cursor:
+            incidents.append({
+                "incident_id": str(incident["_id"]),
+                "incident_type": "GENERIC",
+                "alert_count": 1,  # Simplified
+                "severity": self._severity_to_string(incident.get("severity", 1)),
+                "confidence": 0.8,  # Simplified
+                "attack_pattern": [],
+                "start_time": incident["created_at"].isoformat(),
+                "end_time": incident.get("resolved_at", incident["created_at"]).isoformat(),
+                "title": incident.get("title", ""),
+                "description": incident.get("description", ""),
+                "status": incident.get("status", "open")
+            })
+        return incidents
+
+    async def get_anomalies(self, limit: int = 100) -> List[Dict[str, Any]]:
+        collection = self.db.anomalies
+        cursor = collection.find().sort("timestamp", -1).limit(limit)
+        anomalies = []
+        async for anomaly in cursor:
+            anomalies.append({
+                "timestamp": anomaly["timestamp"].isoformat(),
+                "source": "ML_ENGINE",
+                "anomaly_score": anomaly.get("score", 0.0),
+                "model_type": "Isolation Forest",
+                "message": f"Anomaly detected with score {anomaly.get('score', 0.0)}",
+                "features": anomaly.get("features", {})
+            })
+        return anomalies
+
+    async def get_top_ips(self, limit: int = 10) -> List[Dict[str, Any]]:
+        collection = self.db.security_events
+        pipeline = [
+            {"$match": {"raw_data.src_ip": {"$exists": True}}},
+            {"$group": {"_id": "$raw_data.src_ip", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": limit}
+        ]
+        result = await collection.aggregate(pipeline).to_list(length=limit)
+        return [{"ip": doc["_id"], "count": doc["count"]} for doc in result]
+
+    async def get_timeline(self, hours: int = 24) -> List[Dict[str, Any]]:
+        collection = self.db.security_events
+        since = datetime.utcnow() - timedelta(hours=hours)
+        pipeline = [
+            {"$match": {"timestamp": {"$gte": since}}},
+            {"$group": {
+                "_id": {
+                    "$dateTrunc": {
+                        "date": "$timestamp",
+                        "unit": "hour"
+                    }
+                },
+                "count": {"$sum": 1}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        result = await collection.aggregate(pipeline).to_list(length=None)
+        return [{"timestamp": doc["_id"].isoformat(), "count": doc["count"]} for doc in result]
+
+    def _severity_to_string(self, severity: int) -> str:
+        mapping = {1: "low", 2: "medium", 3: "high", 4: "critical"}
+        return mapping.get(severity, "unknown")
+                for row in result
+            ]
+
+    def authenticate_user(self, username: str, password: str) -> Optional[User]:
+        """Authenticate a user."""
+        with self.get_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user and self._verify_password(password, user.password_hash):
+                return user
+        return None
+
+    def _verify_password(self, plain_password: str, hashed_password: str) -> bool:
+        """Verify password (simplified - use proper hashing in production)."""
+        # In production, use passlib or similar
+        return plain_password == hashed_password  # Placeholder
+
+    @staticmethod
+    def _severity_to_string(severity: int) -> str:
+        """Convert severity number to string."""
+        mapping = {1: "LOW", 2: "LOW", 3: "MEDIUM", 4: "HIGH", 5: "CRITICAL"}
+        return mapping.get(severity, "UNKNOWN")

@@ -2,15 +2,16 @@ from typing import List, Dict, Any, Optional
 from ..models.security_event import SecurityEvent
 from ..repositories.base_repo import BaseRepository
 import json
+import asyncio
 
 
 class AlertService:
     def __init__(self, repository: BaseRepository):
         self.repository = repository
 
-    def get_normalized_alerts(self, limit: int = 100) -> List[SecurityEvent]:
+    async def get_normalized_alerts(self, limit: int = 100) -> List[SecurityEvent]:
         try:
-            raw_alerts = self.repository.get_alerts(limit=limit)
+            raw_alerts = await self.repository.get_alerts(limit=limit)
         except Exception as e:
             import logging
 
