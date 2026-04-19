@@ -280,7 +280,8 @@ def run_bridge(api_url="http://localhost:8000", log_file="alert_fast.txt"):
 
 if __name__ == "__main__":
     import sys
-
-    url = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:2345"
-    path = sys.argv[2] if len(sys.argv) > 2 else "logs/alert.json"
+    # Change 2345 to 2346
+    url = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:2346"
+    # Ensure this matches your actual Snort log location
+    path = sys.argv[2] if len(sys.argv) > 2 else "/var/log/snort/alert_json.txt" 
     run_bridge(url, path)

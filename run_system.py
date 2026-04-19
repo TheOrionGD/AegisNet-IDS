@@ -111,7 +111,7 @@ class SystemOrchestrator:
             command = [self.python_exe, "core/soar_worker.py"]
             cwd = self.root_dir / "back-end"
         elif name == "Snort Bridge":
-            alert_log = self.root_dir / "logs" / "alert.json"
+            alert_log = Path("/var/log/snort/alert_json.txt")
             if not alert_log.exists():
                 alert_log.parent.mkdir(parents=True, exist_ok=True)
                 alert_log.touch()
@@ -219,7 +219,7 @@ class SystemOrchestrator:
         time.sleep(2)
 
         # 4. Ingestion Bridge (Snort-to-Bus)
-        alert_log = self.root_dir / "logs" / "alert.json"
+        alert_log = Path("/var/log/snort/alert_json.txt")
         if not alert_log.exists():
             alert_log.parent.mkdir(parents=True, exist_ok=True)
             alert_log.touch()
