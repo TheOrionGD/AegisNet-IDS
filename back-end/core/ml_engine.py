@@ -4,8 +4,8 @@ import pandas as pd
 import datetime
 from datetime import timezone
 from typing import Dict, Any, Optional
-from data.ml_services.model import AnomalyModel
-from data.ml_services.feature_engineering import FeatureEngineer
+from ml_services.model import AnomalyModel
+from ml_services.feature_engineering import FeatureEngineer
 from config_loader import load_config
 
 logger = logging.getLogger(__name__)

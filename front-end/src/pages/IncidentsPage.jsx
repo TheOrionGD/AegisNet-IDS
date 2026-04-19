@@ -5,7 +5,7 @@ import Badge from '../components/UI/Badge';
 import Card from '../components/UI/Card';
 
 const IncidentsPage = () => {
-  const { data: incidents, isLoading } = useIncidents();
+  const { data: incidents, isLoading, isError, error } = useIncidents();
   const [filter, setFilter] = useState('ALL');
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
 
@@ -24,6 +24,17 @@ const IncidentsPage = () => {
       <div className="h-full flex items-center justify-center text-metalsilver-muted font-mono animate-pulse uppercase tracking-widest font-black">
         <Activity className="text-metalgold-main mr-4" size={24} />
         Syncing Integrated Event Bus...
+      </div>
+    );
+  }
+
+  if (isError) {
+    const errorMessage = error?.message || 'Backend unreachable or returned an error.';
+    return (
+      <div className="h-full flex flex-col items-center justify-center space-y-4 font-mono uppercase tracking-[0.2em]">
+        <AlertCircle className="text-m-critical" size={48} />
+        <span className="text-m-critical font-black text-sm">Incident Feed Unavailable</span>
+        <p className="text-[10px] text-metalsilver-muted font-bold text-center max-w-md">{errorMessage}</p>
       </div>
     );
   }

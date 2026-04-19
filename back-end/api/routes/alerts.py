@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from typing import List, Dict, Any
+import logging
 from ..dependencies import get_alert_service
 from ..services.alert_service import AlertService
 from ..models.security_event import SecurityEvent
@@ -9,6 +10,8 @@ from core.event_bus import bus
 from core.siem_pipeline import get_siem_pipeline, process_siem_event, process_siem_batch
 import datetime
 from datetime import timezone
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -43,12 +46,10 @@ async def get_alerts(
 ):
     """Retrieve normalized alerts (raw IDS + ML + system)"""
     try:
-        return service.get_normalized_alerts(limit=limit)
+        return await service.get_normalized_alerts(limit=limit)
     except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).error(f"Error fetching alerts: {e}")
-        return []
+        logger.error(f"Error fetching alerts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch alerts. Please try again.")
 
 
 @router.get("/timeline")
@@ -57,11 +58,9 @@ async def get_timeline(
 ):
     """Retrieve time-series attack flow"""
     try:
-        return {"status": "success", "data": service.get_timeline(hours=hours)}
+        return {"status": "success", "data": await service.get_timeline(hours=hours)}
     except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).error(f"Error fetching timeline: {e}")
+        logger.error(f"Error fetching timeline: {e}", exc_info=True)
         return {"status": "success", "data": []}
 
 
@@ -71,11 +70,9 @@ async def get_top_ips(
 ):
     """Retrieve top attacker IPs"""
     try:
-        return {"status": "success", "data": service.get_top_ips(limit=limit)}
+        return {"status": "success", "data": await service.get_top_ips(limit=limit)}
     except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).error(f"Error fetching top IPs: {e}")
+        logger.error(f"Error fetching top IPs: {e}", exc_info=True)
         return {"status": "success", "data": []}
 
 

@@ -4,8 +4,17 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# ── Root .env resolution ───────────────────────────────────────────────────────
+# This file lives at  <project-root>/back-end/config_loader.py
+#   parents[0] = back-end/
+#   parents[1] = project root  (E:\PROJECTS\CNS)
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_ENV_FILE = _PROJECT_ROOT / ".env"
+
+# override=False: any variable already set in the shell/OS environment
+# takes precedence over the .env file (12-factor principle).
+load_dotenv(dotenv_path=_ENV_FILE, override=False)
+# ──────────────────────────────────────────────────────────────────────────────
 
 logger = logging.getLogger(__name__)
 

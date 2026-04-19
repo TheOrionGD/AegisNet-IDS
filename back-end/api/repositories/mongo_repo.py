@@ -92,24 +92,3 @@ class MongoRepository(BaseRepository):
     def _severity_to_string(self, severity: int) -> str:
         mapping = {1: "low", 2: "medium", 3: "high", 4: "critical"}
         return mapping.get(severity, "unknown")
-                for row in result
-            ]
-
-    def authenticate_user(self, username: str, password: str) -> Optional[User]:
-        """Authenticate a user."""
-        with self.get_session() as session:
-            user = session.query(User).filter(User.username == username).first()
-            if user and self._verify_password(password, user.password_hash):
-                return user
-        return None
-
-    def _verify_password(self, plain_password: str, hashed_password: str) -> bool:
-        """Verify password (simplified - use proper hashing in production)."""
-        # In production, use passlib or similar
-        return plain_password == hashed_password  # Placeholder
-
-    @staticmethod
-    def _severity_to_string(severity: int) -> str:
-        """Convert severity number to string."""
-        mapping = {1: "LOW", 2: "LOW", 3: "MEDIUM", 4: "HIGH", 5: "CRITICAL"}
-        return mapping.get(severity, "UNKNOWN")

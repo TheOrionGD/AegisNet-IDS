@@ -10,9 +10,16 @@ export const useAlerts = (limit = 100) => {
     queryFn: async () => {
       const { data } = await api.get(`/alerts?limit=${limit}`);
       setLastUpdated(new Date().toISOString());
-      return data;
+      // Normalise: backend may return null/undefined on empty DB
+      return Array.isArray(data) ? data : [];
     },
-    refetchInterval: 10000, // Poll every 10s as a fallback to WebSockets
-    staleTime: 5000,
+    // Poll every 10 s as WebSocket fallback
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+    // Retry twice with exponential back-off before surfacing an error
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 15_000),
+    // Keep previous data visible while a background refresh is running
+    placeholderData: (prev) => prev,
   });
 };

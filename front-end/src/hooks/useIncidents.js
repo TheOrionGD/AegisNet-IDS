@@ -9,26 +9,30 @@ export const useIncidents = () => {
     queryKey: ['incidents'],
     queryFn: async () => {
       const { data } = await api.get('/incidents');
-      // Update global timestamp when data arrives
       setLastUpdated(new Date().toISOString());
-      return data;
+      return Array.isArray(data) ? data : [];
     },
-    // Disable REST polling - relying on WebSockets for real-time updates
+    // Rely on WebSocket for real-time updates; no polling needed
     refetchInterval: false,
     refetchIntervalInBackground: false,
     staleTime: Infinity,
-    // Attempt deduplication based on ID just in case
+    // Retry twice with exponential back-off before surfacing an error
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 15_000),
+    // Keep previous data visible during background refetch
+    placeholderData: (prev) => prev,
     select: (data) => {
       if (!Array.isArray(data)) return [];
-      const unique = [];
-      const ids = new Set();
-      data.forEach(item => {
-        if (!ids.has(item.id)) {
-          unique.push(item);
-          ids.add(item.id);
+      const seen = new Set();
+      return data.reduce((acc, item) => {
+        // Backend uses incident_id; normalise to `id` for UI consistency
+        const id = item.incident_id || item.id;
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          acc.push({ ...item, id });
         }
-      });
-      return unique;
-    }
+        return acc;
+      }, []);
+    },
   });
 };
