@@ -4,6 +4,7 @@ from datetime import datetime
 
 router = APIRouter()
 
+
 @router.get("/health", response_model=HealthStatus)
 async def get_health():
     """Retrieve system status"""
@@ -14,6 +15,6 @@ async def get_health():
             "ids": "ENABLED",
             "ml_engine": "ENABLED",
             "correlation_engine": "ENABLED",
-            "storage": "SQLITE"
-        }
+            "storage": "MongoDB",
+        },
     )

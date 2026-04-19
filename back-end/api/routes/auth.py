@@ -54,24 +54,30 @@ async def create_user(
     user: UserCreate, db: AsyncIOMotorDatabase = Depends(get_database)
 ):
     """Create a new user."""
-    existing = await db["users"].find_one({"username": user.username})
-    if existing:
-        raise HTTPException(status_code=400, detail="Username already registered")
+    try:
+        users_collection = db["users"]
+        existing = await users_collection.find_one({"username": user.username})
+        if existing:
+            raise HTTPException(status_code=400, detail="Username already registered")
 
-    hashed_password = get_password_hash(user.password)
-    user_doc = {
-        "username": user.username,
-        "email": user.email,
-        "password_hash": hashed_password,
-        "role": user.role,
-        "is_active": True,
-    }
-    result = await db["users"].insert_one(user_doc)
-    user_doc["_id"] = result.inserted_id
-    return UserResponse(
-        id=str(user_doc["_id"]),
-        username=user_doc["username"],
-        email=user_doc["email"],
-        role=user_doc["role"],
-        is_active=user_doc["is_active"],
-    )
+        hashed_password = get_password_hash(user.password)
+        user_doc = {
+            "username": user.username,
+            "email": user.email,
+            "password_hash": hashed_password,
+            "role": user.role,
+            "is_active": True,
+        }
+        result = await users_collection.insert_one(user_doc)
+        user_doc["_id"] = result.inserted_id
+        return UserResponse(
+            id=str(user_doc["_id"]),
+            username=user_doc["username"],
+            email=user_doc["email"],
+            role=user_doc["role"],
+            is_active=user_doc["is_active"],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")

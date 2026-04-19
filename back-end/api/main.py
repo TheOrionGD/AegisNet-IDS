@@ -83,15 +83,10 @@ app = FastAPI(
     version="6.0.0",
 )
 
-# CORS — allow dev server and backend-host-accessed frontend
+# CORS — allow specific origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:1234",
-        "http://localhost:3000",
-        "http://127.0.0.1:1234",
-        "http://10.169.17.117:1234",  # Frontend accessed via backend host IP
-    ],
+    allow_origins=["http://localhost:1234", "http://10.169.17.117:2346"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,17 +103,7 @@ class EnsureCORSHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         origin = request.headers.get("origin")
-        allowed_origins = [
-            "http://localhost:1234",
-            "http://localhost:3000",
-            "http://127.0.0.1:1234",
-            "http://10.169.17.117:1234",
-        ]
-        # If the request origin is in our allowed list and the header is missing, add it
-        if (
-            origin in allowed_origins
-            and "access-control-allow-origin" not in response.headers
-        ):
+        if origin and "access-control-allow-origin" not in response.headers:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
         return response

@@ -1,5 +1,6 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ConnectionFailure
+from fastapi import HTTPException
 import logging
 import os
 from dotenv import load_dotenv
@@ -48,6 +49,10 @@ async def close_mongo_connection():
 
 def get_database():
     """Get database instance"""
+    if db_instance.db is None:
+        raise HTTPException(
+            status_code=503, detail="Database not initialized. Please try again."
+        )
     return db_instance.db
 
 
