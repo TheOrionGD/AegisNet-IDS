@@ -34,48 +34,26 @@ logger = logging.getLogger(__name__)
 
 
 # Initialize Infrastructure on Startup with Retry Logic
-def verify_infrastructure(max_retries=3, delay=1):
-    """Ensures all backend services (Postgres, Redis, ES) are reachable."""
-    # First, try to get engine with current config (may be PostgreSQL from .env)
-    engine = get_engine()
-    logger.info(f"[STARTUP] Initial engine URL: {engine.url}")
+async def verify_infrastructure(max_retries=3, delay=1):
+    """Ensures MongoDB Atlas is reachable."""
     db_ready = False
 
-    # 1. Database (PostgreSQL or fallback SQLite)
+    # 1. Database (MongoDB Atlas)
     for i in range(max_retries):
         try:
-            Base.metadata.create_all(bind=engine)
-            logger.info("[STARTUP] Database connected and schema verified.")
+            await connect_to_mongo()
+            logger.info("[STARTUP] MongoDB Atlas connected.")
             db_ready = True
             break
         except Exception as e:
             if i < max_retries - 1:
                 logger.warning(
-                    f"[STARTUP] Database not ready ({i + 1}/3), retrying in 1s..."
+                    f"[STARTUP] MongoDB not ready ({i + 1}/3), retrying in 1s... {e}"
                 )
-                time.sleep(delay)
+                await asyncio.sleep(delay)
             else:
-                logger.error("[STARTUP] Could not connect to database.")
-                database_url = engine.url  # Use the engine we already have
-                logger.info(f"[STARTUP] Current database URL: {database_url}")
-                if database_url.drivername.startswith("postgresql"):
-                    fallback_path = (
-                        Path(__file__).resolve().parents[1] / "data" / "cns.db"
-                    )
-                    # Create SQLite engine directly
-                    from sqlalchemy import create_engine
-
-                    sqlite_url = f"sqlite:///{fallback_path.as_posix()}"
-                    engine = create_engine(sqlite_url)
-                    logger.warning(
-                        f"[STARTUP] Falling back to local SQLite database at {fallback_path}."
-                    )
-                    logger.info(f"[STARTUP] Created SQLite engine: {engine.url}")
-                    Base.metadata.create_all(bind=engine)
-                    logger.info("[STARTUP] Local SQLite database initialized.")
-                    db_ready = True
-                else:
-                    raise e
+                logger.error(f"[STARTUP] Could not connect to MongoDB Atlas: {e}")
+                raise e
 
     # 2. Redis & Elasticsearch check will happen inside services on instantiation
     # but we can do a quick check here to log status
@@ -87,10 +65,10 @@ def verify_infrastructure(max_retries=3, delay=1):
     except Exception as e:
         logger.error(f"[STARTUP] Storage System failure: {e}")
 
-    return engine
+    return db_ready
 
 
-engine = verify_infrastructure()
+engine = None  # Placeholder, will be set in startup
 
 app = FastAPI(
     title="CNS SIEM API",
