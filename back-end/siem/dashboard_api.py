@@ -1,14 +1,16 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-import sqlite3
 import json
 import asyncio
 from pathlib import Path
 import sys
+from datetime import datetime, timezone, timedelta
+from typing import Optional
 
-# Hack to allow running directly from src/siem/
 sys.path.append(str(Path(__file__).parent.parent))
 from config_loader import load_config
+from siem.storage import get_storage
+from api.models.database import MONGODB_URL, DATABASE_NAME
 
 app = FastAPI(
     title="CNS SIEM Dashboard API",
@@ -16,16 +18,14 @@ app = FastAPI(
     version="4.0.0",
 )
 
-
-def get_db_connection():
-    config = load_config()
-    db_path = config.get("siem", {}).get("db_path", "data/cns.db")
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+_storage = None
 
 
-# ── WebSocket Manager ────────────────────────────────────────────────────────
+def get_storage_instance():
+    global _storage
+    if _storage is None:
+        _storage = get_storage()
+    return _storage
 
 
 class ConnectionManager:
@@ -52,24 +52,22 @@ manager = ConnectionManager()
 
 
 async def poll_new_events():
-    """Background task to poll SQLite for new events and broadcast them via WebSockets."""
     last_log_time = None
     last_incident_time = None
 
-    # Initialize from current DB state
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT MAX(timestamp) as m from raw_logs")
-        row = cursor.fetchone()
-        if row and row["m"]:
-            last_log_time = row["m"]
+        storage = get_storage_instance()
+        collection = storage.db["ids_events"]
+        cursor = collection.find().sort("timestamp", -1).limit(1)
+        events = await cursor.to_list(length=1)
+        if events:
+            last_log_time = events[0].get("timestamp")
 
-        cursor.execute("SELECT MAX(start_time) as m from incidents")
-        row = cursor.fetchone()
-        if row and row["m"]:
-            last_incident_time = row["m"]
-        conn.close()
+        inc_collection = storage.db["incidents"]
+        cursor = inc_collection.find().sort("start_time", -1).limit(1)
+        incidents = await cursor.to_list(length=1)
+        if incidents:
+            last_incident_time = incidents[0].get("start_time")
     except Exception as e:
         print(f"Error initializing event times: {e}")
         last_log_time = "1970-01-01"
@@ -82,71 +80,60 @@ async def poll_new_events():
 
         events_to_broadcast = []
         try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
+            storage = get_storage_instance()
 
-            # Fetch new logs
             if last_log_time:
-                cursor.execute(
-                    "SELECT * from raw_logs WHERE timestamp > ? ORDER BY timestamp ASC",
-                    (last_log_time,),
+                cursor = (
+                    storage.db["ids_events"]
+                    .find({"timestamp": {"$gt": last_log_time}})
+                    .sort("timestamp", 1)
                 )
             else:
-                cursor.execute("SELECT * from raw_logs ORDER BY timestamp ASC LIMIT 50")
+                cursor = storage.db["ids_events"].find().sort("timestamp", 1).limit(50)
 
-            logs = cursor.fetchall()
+            logs = await cursor.to_list(length=100)
             for row in logs:
-                r = dict(row)
-                last_log_time = max(last_log_time or "", r["timestamp"])
+                last_log_time = max(last_log_time or "", row.get("timestamp", ""))
 
-                evt_type = "ML" if r["alert_type"] == "ML_ANOMALY" else "IDS"
-                score = 0.0
-                if evt_type == "ML" and r["raw_payload"]:
-                    try:
-                        p = json.loads(r["raw_payload"])
-                        score = float(p.get("anomaly_score", 0.0))
-                    except:
-                        pass
+                evt_type = "ML" if row.get("is_anomaly", False) else "IDS"
+                score = row.get("ml_score", 0.0)
 
                 events_to_broadcast.append(
                     {
-                        "timestamp": r["timestamp"],
+                        "timestamp": row.get("timestamp"),
                         "type": evt_type,
-                        "severity": r["severity"],
-                        "source_ip": r["src_ip"],
-                        "message": r["alert_type"],
+                        "severity": row.get("severity", "LOW"),
+                        "source_ip": row.get("src_ip"),
+                        "message": row.get("alert_type", "EVENT"),
                         "score": score,
                     }
                 )
 
-            # Fetch new incidents
             if last_incident_time:
-                cursor.execute(
-                    "SELECT * from incidents WHERE start_time > ? ORDER BY start_time ASC",
-                    (last_incident_time,),
+                cursor = (
+                    storage.db["incidents"]
+                    .find({"start_time": {"$gt": last_incident_time}})
+                    .sort("start_time", 1)
                 )
             else:
-                cursor.execute(
-                    "SELECT * from incidents ORDER BY start_time ASC LIMIT 10"
-                )
+                cursor = storage.db["incidents"].find().sort("start_time", 1).limit(10)
 
-            incidents = cursor.fetchall()
+            incidents = await cursor.to_list(length=50)
             for row in incidents:
-                r = dict(row)
-                last_incident_time = max(last_incident_time or "", r["start_time"])
+                last_incident_time = max(
+                    last_incident_time or "", row.get("start_time", "")
+                )
 
                 events_to_broadcast.append(
                     {
-                        "timestamp": r["start_time"],
+                        "timestamp": row.get("start_time"),
                         "type": "CORRELATION",
-                        "severity": r["severity"],
-                        "source_ip": r["src_ip"],
-                        "message": f"Incident {r['incident_id']} matched. {r['alert_count']} alerts.",
-                        "score": float(r["alert_count"]),
+                        "severity": row.get("severity", "LOW"),
+                        "source_ip": row.get("src_ip", ""),
+                        "message": f"Incident {row.get('incident_id', 'unknown')} matched.",
+                        "score": float(row.get("alert_count", 1)),
                     }
                 )
-
-            conn.close()
 
             for evt in events_to_broadcast:
                 await manager.broadcast(evt)
@@ -163,7 +150,6 @@ async def startup_event():
 @app.websocket("/ws/alerts")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    # Give the client some initial context immediately if wanted, or just wait for live
     try:
         while True:
             data = await websocket.receive_text()
@@ -173,98 +159,74 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
-# ── Phase 3 endpoints (unchanged) ────────────────────────────────────────────
-
-
 @app.get("/dashboard/incidents")
-def get_incidents(limit: int = 50):
-    """Retrieve top incidents (correlated events)"""
+async def get_incidents(limit: int = 50):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM incidents ORDER BY start_time DESC LIMIT ?", (limit,)
-        )
-        rows = cursor.fetchall()
-
-        results = []
-        for row in rows:
-            record = dict(row)
-            try:
-                record["attack_pattern"] = json.loads(record["attack_pattern"])
-            except:
-                record["attack_pattern"] = []
-            results.append(record)
-
-        conn.close()
+        storage = get_storage_instance()
+        cursor = storage.db["incidents"].find().sort("start_time", -1).limit(limit)
+        results = await cursor.to_list(length=limit)
+        for r in results:
+            r.pop("_id", None)
         return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/dashboard/ips")
-def get_top_ips(limit: int = 10):
-    """Retrieve top attacker IPs based on raw logs"""
+async def get_top_ips(limit: int = 10):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT src_ip, COUNT(*) as alert_count 
-            FROM raw_logs 
-            GROUP BY src_ip 
-            ORDER BY alert_count DESC 
-            LIMIT ?
-        """,
-            (limit,),
-        )
-        rows = cursor.fetchall()
-
-        results = [dict(row) for row in rows]
-        conn.close()
+        storage = get_storage_instance()
+        pipeline = [
+            {"$match": {"src_ip": {"$exists": True, "$ne": ""}}},
+            {"$group": {"_id": "$src_ip", "alert_count": {"$sum": 1}}},
+            {"$sort": {"alert_count": -1}},
+            {"$limit": limit},
+        ]
+        cursor = storage.db["ids_events"].aggregate(pipeline)
+        results = await cursor.to_list(length=limit)
+        results = [
+            {"src_ip": r["_id"], "alert_count": r["alert_count"]} for r in results
+        ]
         return {"status": "success", "data": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/dashboard/timeline")
-def get_timeline():
-    """Retrieve alert volume aggregated by hour"""
+async def get_timeline():
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT strftime('%Y-%m-%d %H:00:00', timestamp) as time_bucket, COUNT(*) as volume
-            FROM raw_logs
-            GROUP BY time_bucket
-            ORDER BY time_bucket DESC
-            LIMIT 24
-        """)
-        rows = cursor.fetchall()
-
-        results = [dict(row) for row in rows]
-        conn.close()
-        return {"status": "success", "data": results[::-1]}  # Return chronological
+        storage = get_storage_instance()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        pipeline = [
+            {"$match": {"timestamp": {"$gte": cutoff}}},
+            {
+                "$group": {
+                    "_id": {
+                        "$dateToString": {
+                            "format": "%Y-%m-%d %H:00:00",
+                            "date": {"$toDate": "$timestamp"},
+                        }
+                    },
+                    "volume": {"$sum": 1},
+                }
+            },
+            {"$sort": {"_id": -1}},
+            {"$limit": 24},
+        ]
+        cursor = storage.db["ids_events"].aggregate(pipeline)
+        results = await cursor.to_list(length=24)
+        results = [{"time_bucket": r["_id"], "volume": r["volume"]} for r in results]
+        return {"status": "success", "data": results[::-1]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Phase 4 endpoints ─────────────────────────────────────────────────────────
-
-
 @app.get("/phase4/posture")
-def get_security_posture():
-    """
-    Real-time Global Security Posture:
-    Returns risk_score (0-100), threat_level, and component breakdown.
-    """
+async def get_security_posture():
     try:
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        from phase4.security_posture import SecurityPostureEngine
+        from siem.security_posture import SecurityPostureEngine
 
-        config = load_config()
-        db_path = config.get("siem", {}).get("db_path", "data/cns.db")
-        engine = SecurityPostureEngine(db_path=db_path)
+        engine = SecurityPostureEngine()
         posture = engine.compute_posture()
         return {"status": "success", "data": posture}
     except Exception as e:
@@ -272,55 +234,38 @@ def get_security_posture():
 
 
 @app.get("/phase4/posture/history")
-def get_posture_history(limit: int = 48):
-    """Historical security posture snapshots for trend charts."""
+async def get_posture_history(limit: int = 48):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM security_posture ORDER BY computed_at DESC LIMIT ?", (limit,)
+        storage = get_storage_instance()
+        cursor = (
+            storage.db["security_posture"].find().sort("computed_at", -1).limit(limit)
         )
-        rows = cursor.fetchall()
-        results = []
-        for row in rows:
-            record = dict(row)
-            try:
-                record["components"] = json.loads(record.get("components_json", "{}"))
-            except Exception:
-                record["components"] = {}
-            results.append(record)
-        conn.close()
+        results = await cursor.to_list(length=limit)
+        for r in results:
+            r.pop("_id", None)
         return {"status": "success", "count": len(results), "data": results[::-1]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/phase4/hunts")
-def get_hunt_results(limit: int = 50, hunt_type: str = None):
-    """Retrieve recent threat hunting findings, optionally filtered by type."""
+async def get_hunt_results(limit: int = 50, hunt_type: Optional[str] = None):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        storage = get_storage_instance()
+        query = {}
         if hunt_type:
-            cursor.execute(
-                "SELECT * FROM hunt_results WHERE hunt_type = ? "
-                "ORDER BY detected_at DESC LIMIT ?",
-                (hunt_type, limit),
-            )
-        else:
-            cursor.execute(
-                "SELECT * FROM hunt_results ORDER BY detected_at DESC LIMIT ?", (limit,)
-            )
-        rows = cursor.fetchall()
-        results = []
-        for row in rows:
-            record = dict(row)
-            try:
-                record["details"] = json.loads(record.get("details", "{}"))
-            except Exception:
-                record["details"] = {}
-            results.append(record)
-        conn.close()
+            query["hunt_type"] = hunt_type
+        cursor = (
+            storage.db["hunt_results"].find(query).sort("detected_at", -1).limit(limit)
+        )
+        results = await cursor.to_list(length=limit)
+        for r in results:
+            r.pop("_id", None)
+            if isinstance(r.get("details"), str):
+                try:
+                    r["details"] = json.loads(r["details"])
+                except:
+                    pass
         return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -328,106 +273,82 @@ def get_hunt_results(limit: int = 50, hunt_type: str = None):
 
 class FeedbackRequest(BaseModel):
     incident_id: str
-    label: str  # TRUE_POSITIVE | FALSE_POSITIVE | UNKNOWN
+    label: str
     analyst: str = "analyst"
     notes: str = ""
 
 
 @app.post("/phase4/feedback")
-def submit_feedback(req: FeedbackRequest):
-    """
-    Submit analyst feedback for an incident (human-in-the-loop).
-    Triggers threshold adjustment when enough feedback accumulates.
-    """
+async def submit_feedback(req: FeedbackRequest):
     try:
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        from phase4.feedback_loop import FeedbackLoop
+        storage = get_storage_instance()
+        from datetime import datetime
 
-        config = load_config()
-        db_path = config.get("siem", {}).get("db_path", "data/cns.db")
-        fb = FeedbackLoop(db_path=db_path)
-        record = fb.submit_feedback(
-            incident_id=req.incident_id,
-            label=req.label,
-            analyst=req.analyst,
-            notes=req.notes,
-        )
-        stats = fb.get_feedback_stats()
-        return {
-            "status": "success",
-            "feedback_id": record["id"],
-            "current_stats": stats,
+        feedback_doc = {
+            "id": str(datetime.now(timezone.utc).timestamp()),
+            "incident_id": req.incident_id,
+            "label": req.label,
+            "analyst": req.analyst,
+            "notes": req.notes,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        await storage.db["feedback"].insert_one(feedback_doc)
+        return {"status": "success", "feedback_id": feedback_doc["id"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/phase4/feedback")
-def get_feedback(limit: int = 50):
-    """Retrieve recent analyst feedback entries."""
+async def get_feedback(limit: int = 50):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM feedback ORDER BY timestamp DESC LIMIT ?", (limit,)
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
-        return {"status": "success", "count": len(rows), "data": rows}
+        storage = get_storage_instance()
+        cursor = storage.db["feedback"].find().sort("timestamp", -1).limit(limit)
+        results = await cursor.to_list(length=limit)
+        for r in results:
+            r.pop("_id", None)
+        return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/phase4/responses")
-def get_response_actions(limit: int = 50):
-    """Retrieve recent automated SOAR-Lite response actions."""
+async def get_response_actions(limit: int = 50):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM response_actions ORDER BY executed_at DESC LIMIT ?", (limit,)
+        storage = get_storage_instance()
+        cursor = (
+            storage.db["response_actions"].find().sort("executed_at", -1).limit(limit)
         )
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
-        return {"status": "success", "count": len(rows), "data": rows}
+        results = await cursor.to_list(length=limit)
+        for r in results:
+            r.pop("_id", None)
+        return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/phase4/model-versions")
-def get_model_versions():
-    """Retrieve ML model version history."""
+async def get_model_versions():
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM model_versions ORDER BY created_at DESC LIMIT 20")
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
-        return {"status": "success", "count": len(rows), "data": rows}
+        storage = get_storage_instance()
+        cursor = storage.db["model_versions"].find().sort("trained_at", -1).limit(20)
+        results = await cursor.to_list(length=20)
+        for r in results:
+            r.pop("_id", None)
+        return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/phase4/rule-scores")
-def get_rule_scores(retired: bool = False):
-    """Retrieve rule effectiveness scores and hit rates."""
+async def get_rule_scores(retired: bool = False):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        if retired:
-            cursor.execute(
-                "SELECT * FROM rule_scores ORDER BY effectiveness_score DESC"
-            )
-        else:
-            cursor.execute(
-                "SELECT * FROM rule_scores WHERE is_retired = 0 "
-                "ORDER BY effectiveness_score DESC"
-            )
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
-        return {"status": "success", "count": len(rows), "data": rows}
+        storage = get_storage_instance()
+        query = {} if retired else {"is_retired": False}
+        cursor = storage.db["rule_scores"].find(query).sort("effectiveness_score", -1)
+        results = await cursor.to_list(length=100)
+        for r in results:
+            r.pop("_id", None)
+        return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

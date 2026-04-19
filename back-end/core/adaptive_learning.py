@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,9 @@ import joblib
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import precision_score, recall_score
 from sklearn.preprocessing import StandardScaler
+
+from siem.storage import get_storage
+from api.models.database import MONGODB_URL, DATABASE_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -82,19 +86,21 @@ class AdaptiveLearningEngine:
     def __init__(
         self,
         models_dir: str = "models",
-        db_path: str = "data/cns.db",
+        mongo_url: str = None,
+        db_name: str = None,
         rolling_window: int = 500,
         min_samples_to_retrain: int = 20,
         base_contamination: float = 0.1,
     ):
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = Path(db_path)
+        self.mongo_url = mongo_url or MONGODB_URL
+        self.db_name = db_name or DATABASE_NAME
+        self.storage = get_storage()
         self.rolling_window = rolling_window
         self.min_samples_to_retrain = min_samples_to_retrain
         self.base_contamination = base_contamination
 
-        # In-memory rolling sample store: list of (features_dict, label) tuples
         self._sample_buffer: List[Tuple[Dict, str]] = []
         self._lock = threading.Lock()
 
@@ -178,20 +184,24 @@ class AdaptiveLearningEngine:
         return self._active_version
 
     def get_version_history(self) -> List[Dict]:
-        """Return all model version metadata from the DB."""
-        import sqlite3
-
-        if not self.db_path.exists():
-            return []
+        """Return all model version metadata from MongoDB."""
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT * FROM model_versions ORDER BY created_at DESC LIMIT 20"
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-            conn.close()
+            import asyncio
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                cursor = (
+                    self.storage.db["model_versions"]
+                    .find()
+                    .sort("created_at", -1)
+                    .limit(20)
+                )
+                rows = loop.run_until_complete(cursor.to_list(length=20))
+            finally:
+                loop.close()
+            for r in rows:
+                r.pop("_id", None)
             return rows
         except Exception as exc:
             logger.warning(f"Could not load version history: {exc}")
@@ -354,34 +364,17 @@ class AdaptiveLearningEngine:
         return mv
 
     def _persist_version(self, mv: ModelVersion) -> None:
-        """Persist model version metadata to SQLite."""
-        import sqlite3
+        """Persist model version metadata to MongoDB."""
+        import asyncio
+
+        async def _save():
+            collection = self.storage.db["model_versions"]
+            await collection.update_many({}, {"$set": {"is_active": False}})
+            doc = mv.to_dict()
+            await collection.replace_one({"version": mv.version}, doc, upsert=True)
 
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            cur = conn.cursor()
-            # Deactivate all existing
-            cur.execute("UPDATE model_versions SET is_active = 0")
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO model_versions
-                (version, created_at, contamination, precision, recall,
-                 drift_score, training_samples, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    mv.version,
-                    mv.created_at,
-                    mv.contamination,
-                    mv.precision,
-                    mv.recall,
-                    mv.drift_score,
-                    mv.training_samples,
-                    int(mv.is_active),
-                ),
-            )
-            conn.commit()
-            conn.close()
+            asyncio.run(_save())
         except Exception as exc:
             logger.warning(f"Failed to persist model version to DB: {exc}")
 

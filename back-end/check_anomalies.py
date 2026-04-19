@@ -1,6 +1,12 @@
-import sqlite3
+import asyncio
+from siem.storage import get_storage
 
-conn = sqlite3.connect("data/cns.db")
-cursor = conn.execute("SELECT COUNT(*) FROM raw_logs WHERE alert_type = 'ML_ANOMALY'")
-print("ML Anomalies:", cursor.fetchone()[0])
-conn.close()
+
+async def check_anomalies():
+    storage = get_storage()
+    count = await storage.db["ids_events"].count_documents({"is_anomaly": True})
+    print(f"ML Anomalies: {count}")
+
+
+if __name__ == "__main__":
+    asyncio.run(check_anomalies())

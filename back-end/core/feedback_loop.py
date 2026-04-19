@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Phase 4 – Feedback Loop System (Human-in-the-Loop)
-====================================================
+===================================================
 Accepts analyst labels (TRUE_POSITIVE / FALSE_POSITIVE / UNKNOWN) for
 SIEM incidents and feeds them back into:
 
@@ -11,159 +11,132 @@ SIEM incidents and feeds them back into:
        - Excess FP  → raise anomaly_score threshold (reduce sensitivity)
        - Excess FN  → lower anomaly_score threshold (raise sensitivity)
 
-All feedback is persisted to the `feedback` table in SQLite.
+All feedback is persisted to MongoDB Atlas.
 Threshold adjustments are persisted to a JSON config overlay file so
 the pipeline can read them on restart.
 """
 
 import json
 import logging
-import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from siem.storage import get_storage
+from api.models.database import MONGODB_URL, DATABASE_NAME
+
 logger = logging.getLogger(__name__)
 
-# Valid analyst labels
 LABEL_TP = "TRUE_POSITIVE"
 LABEL_FP = "FALSE_POSITIVE"
 LABEL_UNKNOWN = "UNKNOWN"
 VALID_LABELS = {LABEL_TP, LABEL_FP, LABEL_UNKNOWN}
 
-# Minimum batch size before a threshold adjustment is computed
 ADJUSTMENT_BATCH_SIZE = 5
-# Step size for threshold nudging
 THRESHOLD_STEP = 0.05
-# Bounds for anomaly_score threshold
 THRESHOLD_MIN = -0.8
 THRESHOLD_MAX = -0.1
 
 
 class FeedbackLoop:
-    """
-    Human-in-the-Loop feedback processor.
-    Thread-safe: safe to call from concurrent pipeline threads.
-    """
+    """Human-in-the-Loop feedback processor. Thread-safe."""
 
     def __init__(
         self,
-        db_path: str = "data/cns.db",
+        mongo_url: str = None,
+        db_name: str = None,
         threshold_config_path: str = "data/adaptive_thresholds.json",
         initial_threshold: float = -0.3,
     ):
-        self.db_path = Path(db_path)
+        self.mongo_url = mongo_url or MONGODB_URL
+        self.db_name = db_name or DATABASE_NAME
+        self.storage = get_storage()
         self.threshold_config_path = Path(threshold_config_path)
         self.threshold_config_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
-        # Load persisted threshold or use initial
         self.current_threshold = self._load_threshold(initial_threshold)
 
-        # Counters since last adjustment
         self._tp_since_adjust = 0
         self._fp_since_adjust = 0
 
-        # Reference to the adaptive learning engine (injected lazily)
         self._learning_engine = None
 
         logger.info(
             f"FeedbackLoop initialized. Current threshold={self.current_threshold:.3f}"
         )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Public API
-    # ──────────────────────────────────────────────────────────────────────────
-
     def attach_learning_engine(self, engine) -> None:
-        """Inject the AdaptiveLearningEngine reference."""
         self._learning_engine = engine
+        logger.info("[Feedback] Learning engine attached")
 
     def submit_feedback(
         self,
         incident_id: str,
         label: str,
         features: Optional[Dict] = None,
-        analyst: str = "system",
+        analyst: str = "analyst",
         notes: str = "",
     ) -> Dict:
-        """
-        Record analyst feedback for an incident.
-
-        Args:
-            incident_id : SIEM incident_id
-            label       : TRUE_POSITIVE | FALSE_POSITIVE | UNKNOWN
-            features    : optional dict of numeric features for ML retraining
-            analyst     : identifier of the analyst (default 'system')
-            notes       : free-text notes
-
-        Returns:
-            feedback record dict
-        """
-        label = label.upper()
         if label not in VALID_LABELS:
-            raise ValueError(f"Invalid label '{label}'. Must be one of {VALID_LABELS}")
-
-        record = {
-            "id": str(uuid.uuid4()),
-            "incident_id": incident_id,
-            "label": label,
-            "analyst": analyst,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "notes": notes,
-        }
-        self._persist_feedback(record)
+            raise ValueError(f"Invalid label: {label}. Must be one of {VALID_LABELS}")
 
         with self._lock:
+            record = {
+                "id": str(uuid.uuid4()),
+                "incident_id": incident_id,
+                "label": label,
+                "analyst": analyst,
+                "notes": notes,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "features": features or {},
+            }
+
+            import asyncio
+
+            asyncio.run(self._save_feedback_async(record))
+
             if label == LABEL_TP:
                 self._tp_since_adjust += 1
             elif label == LABEL_FP:
                 self._fp_since_adjust += 1
 
-            # Feed into ML retraining queue
-            if self._learning_engine and features:
-                ml_label = (
-                    "confirmed_true_positive"
-                    if label == LABEL_TP
-                    else "false_positive"
-                    if label == LABEL_FP
-                    else "unknown"
-                )
-                self._learning_engine.ingest_sample(features, ml_label, incident_id)
+            self._maybe_adjust_threshold()
 
-            # Maybe adjust threshold based on accumulated feedback
-            total = self._tp_since_adjust + self._fp_since_adjust
-            if total >= ADJUSTMENT_BATCH_SIZE:
-                self._adjust_threshold()
+            logger.info(
+                f"[Feedback] incident={incident_id} label={label} analyst={analyst}"
+            )
+            return record
 
-        logger.info(
-            f"[Feedback] incident={incident_id} label={label} analyst={analyst}"
-        )
-        return record
+    async def _save_feedback_async(self, record: Dict) -> None:
+        try:
+            await self.storage.db["feedback"].replace_one(
+                {"id": record["id"]}, record, upsert=True
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to save feedback: {exc}")
 
     def get_current_threshold(self) -> float:
-        """Return the current dynamically adjusted anomaly score threshold."""
         return self.current_threshold
 
     def get_feedback_stats(self) -> Dict:
-        """Return aggregate feedback statistics from the DB."""
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT label, COUNT(*) as count
-                FROM feedback
-                GROUP BY label
-                """
-            )
-            rows = cur.fetchall()
-            conn.close()
+            import asyncio
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                pipeline = [{"$group": {"_id": "$label", "count": {"$sum": 1}}}]
+                cursor = self.storage.db["feedback"].aggregate(pipeline)
+                rows = loop.run_until_complete(cursor.to_list(length=10))
+            finally:
+                loop.close()
+
             stats = {label: 0 for label in VALID_LABELS}
             for row in rows:
-                stats[row[0]] = row[1]
+                stats[row["_id"]] = row["count"]
             total = sum(stats.values())
             fp_rate = stats[LABEL_FP] / total if total > 0 else 0.0
             tp_rate = stats[LABEL_TP] / total if total > 0 else 0.0
@@ -181,30 +154,29 @@ class FeedbackLoop:
             return {"current_threshold": self.current_threshold}
 
     def get_recent_feedback(self, limit: int = 50) -> List[Dict]:
-        """Retrieve recent feedback entries from the DB."""
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT * FROM feedback ORDER BY timestamp DESC LIMIT ?",
-                (limit,),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-            conn.close()
+            import asyncio
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                cursor = (
+                    self.storage.db["feedback"]
+                    .find()
+                    .sort("timestamp", -1)
+                    .limit(limit)
+                )
+                rows = loop.run_until_complete(cursor.to_list(length=limit))
+            finally:
+                loop.close()
+            for r in rows:
+                r.pop("_id", None)
             return rows
         except Exception as exc:
             logger.warning(f"Could not load recent feedback: {exc}")
             return []
 
     def bulk_process_feedback(self, feedback_list: List[Dict]) -> int:
-        """
-        Process a batch of feedback dicts at once.
-        Each dict must have keys: incident_id, label.
-        Optionally: features, analyst, notes.
-
-        Returns count of processed entries.
-        """
         count = 0
         for fb in feedback_list:
             try:
@@ -220,18 +192,7 @@ class FeedbackLoop:
                 logger.warning(f"Skipping feedback entry due to error: {exc}")
         return count
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Internal
-    # ──────────────────────────────────────────────────────────────────────────
-
     def _adjust_threshold(self) -> None:
-        """
-        Nudge anomaly_score threshold based on recent TP/FP ratio.
-
-        Logic:
-          - FP-heavy batch  → raise threshold (less sensitive → fewer FPs)
-          - TP-heavy batch  → lower threshold (more sensitive → catch more TPs)
-        """
         tp = self._tp_since_adjust
         fp = self._fp_since_adjust
         total = tp + fp
@@ -239,86 +200,60 @@ class FeedbackLoop:
         if total == 0:
             return
 
-        fp_rate = fp / total
-        tp_rate = tp / total
+        fp_ratio = fp / total
 
-        if fp_rate > 0.5:
-            # Too many false positives – raise threshold
-            delta = THRESHOLD_STEP * min(fp_rate, 1.0)
-            new_threshold = min(THRESHOLD_MAX, self.current_threshold + delta)
-            direction = "↑ (reducing sensitivity)"
-        elif tp_rate > 0.7 and fp_rate < 0.2:
-            # Model is catching real attacks well but might miss some – lower slightly
-            delta = THRESHOLD_STEP * 0.5
-            new_threshold = max(THRESHOLD_MIN, self.current_threshold - delta)
-            direction = "↓ (increasing sensitivity)"
-        else:
-            # Balanced – no adjustment
-            self._tp_since_adjust = 0
-            self._fp_since_adjust = 0
-            return
+        if fp_ratio > 0.6 and self.current_threshold < THRESHOLD_MAX:
+            self.current_threshold = min(
+                THRESHOLD_MAX, self.current_threshold + THRESHOLD_STEP
+            )
+            self._save_threshold()
+            logger.info(
+                f"[Feedback] FP-heavy ({fp_ratio:.1%}), raised threshold to {self.current_threshold:.3f}"
+            )
 
-        old = self.current_threshold
-        self.current_threshold = new_threshold
+        elif fp_ratio < 0.3 and self.current_threshold > THRESHOLD_MIN:
+            self.current_threshold = max(
+                THRESHOLD_MIN, self.current_threshold - THRESHOLD_STEP
+            )
+            self._save_threshold()
+            logger.info(
+                f"[Feedback] TP-heavy ({fp_ratio:.1%}), lowered threshold to {self.current_threshold:.3f}"
+            )
+
         self._tp_since_adjust = 0
         self._fp_since_adjust = 0
 
-        self._save_threshold()
-
-        logger.info(
-            f"[FeedbackLoop] Threshold adjusted {old:.3f} → "
-            f"{new_threshold:.3f} {direction} "
-            f"(batch: tp={tp}, fp={fp})"
-        )
-
-        # Notify the learning engine to also update contamination
-        if self._learning_engine:
-            fn_rate = max(0.0, 1.0 - tp_rate)
-            self._learning_engine.adjust_contamination(fp_rate, fn_rate)
-
-    def _persist_feedback(self, record: Dict) -> None:
-        try:
-            conn = sqlite3.connect(str(self.db_path))
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO feedback
-                (id, incident_id, label, analyst, timestamp, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record["id"],
-                    record["incident_id"],
-                    record["label"],
-                    record["analyst"],
-                    record["timestamp"],
-                    record["notes"],
-                ),
-            )
-            conn.commit()
-            conn.close()
-        except Exception as exc:
-            logger.warning(f"Failed to persist feedback: {exc}")
+    def _maybe_adjust_threshold(self) -> None:
+        if (self._tp_since_adjust + self._fp_since_adjust) >= ADJUSTMENT_BATCH_SIZE:
+            self._adjust_threshold()
 
     def _load_threshold(self, default: float) -> float:
         if self.threshold_config_path.exists():
             try:
-                with self.threshold_config_path.open("r") as f:
+                with open(self.threshold_config_path, "r") as f:
                     data = json.load(f)
-                    return float(data.get("anomaly_score_threshold", default))
-            except Exception:
-                pass
+                    return data.get("anomaly_score_threshold", default)
+            except Exception as exc:
+                logger.warning(f"Could not load threshold config: {exc}")
         return default
 
     def _save_threshold(self) -> None:
         try:
-            existing = {}
-            if self.threshold_config_path.exists():
-                with self.threshold_config_path.open("r") as f:
-                    existing = json.load(f)
-            existing["anomaly_score_threshold"] = self.current_threshold
-            existing["last_updated"] = datetime.now(timezone.utc).isoformat()
-            with self.threshold_config_path.open("w") as f:
-                json.dump(existing, f, indent=2)
+            self.threshold_config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.threshold_config_path, "w") as f:
+                json.dump({"anomaly_score_threshold": self.current_threshold}, f)
         except Exception as exc:
-            logger.warning(f"Failed to save threshold: {exc}")
+            logger.warning(f"Could not persist threshold: {exc}")
+
+    def _audit_log(self, message: str, event_type: str = "INFO") -> None:
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": event_type,
+            "message": message,
+        }
+        self.audit_log.append(entry)
+        logger.info(f"[AUDIT] {event_type}: {message}")
+
+
+def get_feedback_loop() -> FeedbackLoop:
+    return FeedbackLoop()

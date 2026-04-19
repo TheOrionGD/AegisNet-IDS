@@ -11,7 +11,7 @@ from ..auth import (
     Token,
     get_password_hash,
 )
-from ..models.user import UserCreate
+from ..auth import UserCreate
 
 router = APIRouter()
 

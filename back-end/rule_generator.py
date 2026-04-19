@@ -19,11 +19,13 @@ FALSE POSITIVE PREVENTION MECHANISMS:
 import logging
 import json
 import re
-import sqlite3
-from datetime import datetime, UTC
+import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import pandas as pd
+from siem.storage import get_storage
+from api.models.database import MONGODB_URL, DATABASE_NAME
 from siem.threat_defs import (
     RECONNAISSANCE,
     DOS,
@@ -75,6 +77,7 @@ class RuleGenerator:
         self.rules = []
         self.audit_log = []
         self.db_path = Path(db_path)
+        self.storage = get_storage()
 
         # Load whitelist
         self.whitelist = self.DEFAULT_WHITELIST.copy()
@@ -658,186 +661,99 @@ class RuleGenerator:
     # Phase 4: Rule Evolution (mutation, scoring, retirement)
     # ──────────────────────────────────────────────────────────────────────────
 
-    def register_rule(self, sid: int, rule_text: str) -> None:
-        """Register a newly generated rule in the rule_scores DB table."""
+    async def register_rule_async(self, sid: int, rule_text: str) -> None:
+        """Register a newly generated rule in the rule_scores MongoDB collection."""
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT OR IGNORE INTO rule_scores
-                (sid, rule_text, hit_count, effectiveness_score, created_at, is_retired)
-                VALUES (?, ?, 0, 0.5, ?, 0)
-                """,
-                (sid, rule_text, datetime.now(UTC).isoformat()),
+            doc = {
+                "sid": sid,
+                "rule_text": rule_text,
+                "hit_count": 0,
+                "effectiveness_score": 0.5,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "is_retired": False,
+            }
+            await self.storage.db["rule_scores"].replace_one(
+                {"sid": sid}, doc, upsert=True
             )
-            conn.commit()
-            conn.close()
             logger.debug(f"Registered rule sid={sid}")
         except Exception as exc:
             logger.warning(f"Failed to register rule {sid}: {exc}")
 
-    def update_rule_hit(self, sid: int) -> Dict:
-        """
-        Record a hit for a rule (called when a matching alert fires).
-        Increments hit_count and recalculates effectiveness_score.
+    def register_rule(self, sid: int, rule_text: str) -> None:
+        """Sync wrapper for register_rule_async."""
+        asyncio.run(self.register_rule_async(sid, rule_text))
 
-        effectiveness_score uses a log1p saturation curve peaking at ~50 hits.
-        Returns updated scoring dict.
-        """
+    async def update_rule_hit_async(self, sid: int) -> Dict:
+        """Record a hit for a rule (async version)."""
         import math
 
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE rule_scores SET hit_count = hit_count + 1, last_hit_at = ? "
-                "WHERE sid = ?",
-                (now, sid),
+            collection = self.storage.db["rule_scores"]
+            await collection.update_one(
+                {"sid": sid},
+                {"$inc": {"hit_count": 1}, "$set": {"last_hit_at": now}},
             )
-            conn.commit()
-            cur.execute("SELECT * FROM rule_scores WHERE sid = ?", (sid,))
-            row = cur.fetchone()
-            if row:
-                result = dict(row)
-                hits = result["hit_count"]
+            doc = await collection.find_one({"sid": sid})
+            if doc:
+                hits = doc.get("hit_count", 0)
                 eff = min(1.0, math.log1p(hits) / math.log1p(50))
-                cur.execute(
-                    "UPDATE rule_scores SET effectiveness_score = ? WHERE sid = ?",
-                    (eff, sid),
+                await collection.update_one(
+                    {"sid": sid}, {"$set": {"effectiveness_score": eff}}
                 )
-                conn.commit()
-                result["effectiveness_score"] = eff
-                conn.close()
+                doc["effectiveness_score"] = eff
+                doc.pop("_id", None)
                 logger.info(f"Rule {sid} hit #{hits} | effectiveness={eff:.3f}")
-                return result
-            conn.close()
+                return doc
         except Exception as exc:
             logger.warning(f"Failed to update rule hit for {sid}: {exc}")
         return {}
 
-    def score_rule(self, sid: int) -> Dict:
-        """
-        Retrieve current scoring for a rule.
+    def update_rule_hit(self, sid: int) -> Dict:
+        """Record a hit for a rule (called when a matching alert fires)."""
+        return asyncio.run(self.update_rule_hit_async(sid))
 
-        Returns dict with keys:
-          sid, hit_count, effectiveness_score, is_retired, hit_rate
-        """
+    async def score_rule_async(self, sid: int) -> Dict:
+        """Retrieve current scoring for a rule (async)."""
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM rule_scores WHERE sid = ?", (sid,))
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                result = dict(row)
-                created_at = result.get("created_at")
+            doc = await self.storage.db["rule_scores"].find_one({"sid": sid})
+            if doc:
+                doc.pop("_id", None)
+                created_at = doc.get("created_at")
                 if created_at:
                     try:
                         age_days = max(
                             1,
                             (
-                                datetime.now(UTC) - datetime.fromisoformat(created_at)
+                                datetime.now(timezone.utc)
+                                - datetime.fromisoformat(created_at)
                             ).days,
                         )
-                        result["hit_rate"] = result["hit_count"] / age_days
+                        doc["hit_rate"] = doc.get("hit_count", 0) / age_days
                     except Exception:
-                        result["hit_rate"] = 0.0
+                        doc["hit_rate"] = 0.0
                 else:
-                    result["hit_rate"] = 0.0
-                return result
+                    doc["hit_rate"] = 0.0
+                return doc
         except Exception as exc:
             logger.warning(f"Failed to score rule {sid}: {exc}")
         return {}
 
-    def mutate_rule(
-        self,
-        sid: int,
-        incident_context: Optional[Dict] = None,
-    ) -> Optional[str]:
-        """
-        Mutate an existing rule based on repeated incident context.
+    def score_rule(self, sid: int) -> Dict:
+        """Retrieve current scoring for a rule."""
+        return asyncio.run(self.score_rule_async(sid))
 
-        Mutation strategies:
-          1. Bump rev: number
-          2. Tighten threshold COUNT if high alert_count in context
-          3. Embed incident metadata
-
-        Returns the new rule string (does NOT auto-save; caller decides).
-        """
-        scoring = self.score_rule(sid)
-        if not scoring:
-            logger.warning(f"Cannot mutate unknown rule sid={sid}")
-            return None
-
-        rule_text = scoring.get("rule_text", "")
-        if not rule_text:
-            return None
-
-        def bump_rev(rule: str) -> str:
-            match = re.search(r"rev:(\d+)", rule)
-            if match:
-                old_rev = int(match.group(1))
-                return rule.replace(f"rev:{old_rev}", f"rev:{old_rev + 1}")
-            return rule.rstrip(")") + " rev:2;)"
-
-        mutated = bump_rev(rule_text)
-
-        # Tighten threshold count for high-volume incidents
-        alert_count = incident_context.get("alert_count", 0) if incident_context else 0
-        if alert_count > 10:
-            match = re.search(r"count (\d+)", mutated)
-            if match:
-                old_c = int(match.group(1))
-                new_c = max(5, int(old_c * 0.8))
-                mutated = mutated.replace(f"count {old_c}", f"count {new_c}")
-
-        # Embed incident metadata
-        if incident_context:
-            inc_id = incident_context.get("incident_id", "UNKNOWN")
-            if "metadata:" in mutated:
-                mutated = mutated.replace(
-                    "metadata:", f"metadata: mutated_from_incident {inc_id};"
-                )
-            else:
-                mutated = (
-                    mutated.rstrip(")") + f" metadata: mutated_from_incident {inc_id};)"
-                )
-
-        logger.info(f"Mutated rule sid={sid}: {mutated[:80]}...")
-        self._audit_log(
-            f"Rule mutation sid={sid}", "MUTATION", {"original": rule_text[:80]}
-        )
-        return mutated
-
-    def retire_unused_rules(
-        self,
-        hit_threshold: int = 0,
-        min_age_days: int = 7,
+    async def retire_rules_async(
+        self, hit_threshold: int = 0, min_age_days: int = 30
     ) -> List[int]:
-        """
-        Retire rules that have never (or rarely) fired after a minimum age.
-
-        Args:
-            hit_threshold : rules with hit_count <= this value are candidates
-            min_age_days  : rules younger than this are never retired
-
-        Returns:
-            List of retired SIDs
-        """
+        """Retire rules that have never (or rarely) fired after a minimum age (async)."""
         retired_sids: List[int] = []
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT * FROM rule_scores WHERE is_retired = 0 AND hit_count <= ?",
-                (hit_threshold,),
+            collection = self.storage.db["rule_scores"]
+            cursor = collection.find(
+                {"is_retired": False, "hit_count": {"$lte": hit_threshold}}
             )
-            candidates = [dict(r) for r in cur.fetchall()]
+            candidates = await cursor.to_list(length=1000)
 
             for rule in candidates:
                 created_at = rule.get("created_at")
@@ -845,24 +761,21 @@ class RuleGenerator:
                     continue
                 try:
                     age_days = (
-                        datetime.now(UTC) - datetime.fromisoformat(created_at)
+                        datetime.now(timezone.utc) - datetime.fromisoformat(created_at)
                     ).days
                 except Exception:
                     continue
                 if age_days < min_age_days:
                     continue
-                cur.execute(
-                    "UPDATE rule_scores SET is_retired = 1 WHERE sid = ?",
-                    (rule["sid"],),
+                await collection.update_one(
+                    {"sid": rule["sid"]}, {"$set": {"is_retired": True}}
                 )
                 retired_sids.append(rule["sid"])
                 logger.info(
                     f"Retired rule sid={rule['sid']} "
-                    f"(hits={rule['hit_count']}, age={age_days}d)"
+                    f"(hits={rule.get('hit_count', 0)}, age={age_days}d)"
                 )
 
-            conn.commit()
-            conn.close()
         except Exception as exc:
             logger.warning(f"Rule retirement scan failed: {exc}")
 
@@ -873,19 +786,76 @@ class RuleGenerator:
             )
         return retired_sids
 
-    def get_all_rule_scores(self) -> List[Dict]:
-        """Return scoring metadata for all tracked rules."""
+    def retire_rules(self, hit_threshold: int = 0, min_age_days: int = 30) -> List[int]:
+        """Retire rules that have never (or rarely) fired after a minimum age."""
+        return asyncio.run(self.retire_rules_async(hit_threshold, min_age_days))
+
+    async def get_all_rule_scores_async(self) -> List[Dict]:
+        """Return scoring metadata for all tracked rules (async)."""
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM rule_scores ORDER BY effectiveness_score DESC")
-            rows = [dict(r) for r in cur.fetchall()]
-            conn.close()
-            return rows
+            cursor = (
+                self.storage.db["rule_scores"].find().sort("effectiveness_score", -1)
+            )
+            results = await cursor.to_list(length=1000)
+            for r in results:
+                r.pop("_id", None)
+            return results
         except Exception as exc:
             logger.warning(f"Failed to load rule scores: {exc}")
             return []
+
+    def get_all_rule_scores(self) -> List[Dict]:
+        """Return scoring metadata for all tracked rules."""
+        return asyncio.run(self.get_all_rule_scores_async())
+
+def mutate_rule(
+        self,
+        sid: int,
+        incident_context: Optional[Dict] = None,
+        target_fields: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """
+        Create a mutated version of an existing rule.
+
+        Used to generate variations when a rule is firing too often (FP-prone)
+        or not enough (FN-prone).
+
+        Args:
+            sid                : SID of rule to mutate
+            incident_context  : Optional incident data to inform mutation
+            target_fields     : Which rule fields to mutate (default: ["content"])
+
+        Returns:
+            Mutated rule text, or None if mutation fails
+        """
+        current = self.score_rule(sid)
+        if not current:
+            logger.warning(f"Cannot mutate unknown rule sid={sid}")
+            return None
+
+        rule_text = current.get("rule_text", "")
+        if not rule_text:
+            return None
+
+        original_rule = parse_snort_rule(rule_text)
+        if not original_rule:
+            return None
+
+        target_fields = target_fields or ["content"]
+
+        mutation_type = "tighten" if current.get("hit_count", 0) > 100 else "loosen"
+        new_action, new_pattern = mutate_content(
+            original_rule.get("content", ""), mutation_type
+        )
+
+        if new_pattern:
+            original_rule["content"] = new_pattern
+
+        mutated = build_snort_rule(original_rule)
+        return mutated
+
+    def register_rule(self, sid: int, rule_text: str) -> None:
+        asyncio.run(self.register_rule_async(sid, rule_text))
 
 
 def main():

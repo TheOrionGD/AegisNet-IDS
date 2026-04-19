@@ -22,13 +22,14 @@ paths:
   detection_results_output: logs/detection_results.json
   monitor_state: logs/monitor_state.json
 
-# Database Configuration
+# Database Configuration - MongoDB Atlas Cloud
 database:
-  url: sqlite:///data/siem.db
+  url: "mongodb+srv://aegisnet:aegisnet@aegisnet.rzqvn80.mongodb.net/?appName=AegisNET"
+  name: aegisnet
 
 # SIEM Tactical Correlation
 siem:
-  db_path: data/siem.db
+  # MongoDB collections (no db_path needed - using Atlas)
   index_schema: back-end/siem/index_schema.json
   retention_days: 90
   correlation:

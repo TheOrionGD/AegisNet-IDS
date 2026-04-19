@@ -1,11 +1,12 @@
-import sqlite3
+import asyncio
 import json
 import random
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DB_PATH = "data/cns.db"
+from siem.storage import get_storage
+from api.models.database import MONGODB_URL, DATABASE_NAME
 
 MODEL_TYPES = [
     "Isolation Forest",
@@ -29,10 +30,8 @@ ANOMALY_MESSAGES = [
 IP_SEGMENTS = ["192.168.1", "10.0.0", "172.16.0", "192.168.2", "10.10.10"]
 
 
-def seed_anomalies(count=50):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
+async def seed_anomalies_async(count=50):
+    storage = get_storage()
     base_time = datetime.now() - timedelta(hours=24)
 
     for i in range(count):
@@ -48,40 +47,31 @@ def seed_anomalies(count=50):
         message = random.choice(ANOMALY_MESSAGES)
         anomaly_score = round(random.uniform(0.5, 1.0), 3)
 
-        raw_payload = json.dumps(
-            {
+        event = {
+            "id": str(uuid.uuid4()),
+            "src_ip": src_ip,
+            "dst_ip": dst_ip,
+            "protocol": protocol,
+            "severity": "HIGH",
+            "alert_type": "ML_ANOMALY",
+            "timestamp": timestamp.isoformat(),
+            "is_anomaly": True,
+            "ml_score": anomaly_score,
+            "ml_risk_level": "HIGH" if anomaly_score > 0.7 else "MEDIUM",
+            "raw_data": {
                 "anomaly_score": anomaly_score,
                 "model_type": model_type,
                 "message": message,
-                "src_ip": src_ip,
-                "dst_ip": dst_ip,
-                "protocol": protocol,
-            }
-        )
+            },
+        }
 
-        log_id = str(uuid.uuid4())
+        await storage.db["ids_events"].insert_one(event)
 
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO raw_logs
-            (id, src_ip, dst_ip, protocol, severity, alert_type, timestamp, raw_payload)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                log_id,
-                src_ip,
-                dst_ip,
-                protocol,
-                "HIGH",
-                "ML_ANOMALY",
-                timestamp.isoformat(),
-                raw_payload,
-            ),
-        )
+    print(f"Successfully seeded {count} ML anomalies to MongoDB Atlas")
 
-    conn.commit()
-    conn.close()
-    print(f"Successfully seeded {count} ML anomalies to {DB_PATH}")
+
+def seed_anomalies(count=50):
+    asyncio.run(seed_anomalies_async(count))
 
 
 if __name__ == "__main__":

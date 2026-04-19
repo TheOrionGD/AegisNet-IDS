@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Phase 4 – Threat Hunting Engine
-================================
+===============================
 Proactively searches SIEM history for:
   • Lateral movement   – multi-hop src→dst IP chains
   • Low-and-slow       – few events spread over long time windows
@@ -12,53 +12,44 @@ Uses NetworkX DiGraph to build attack graphs:
   Nodes  = IP addresses
   Edges  = (src_ip, dst_ip) annotated with {ports, timestamps, alert_types}
 
-Results are stored in the `hunt_results` table and returned as dicts.
+Results are stored in MongoDB Atlas and returned as dicts.
 """
 
 import json
 import logging
-import sqlite3
 import uuid
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
 import pandas as pd
 
+from siem.storage import get_storage
+from api.models.database import MONGODB_URL, DATABASE_NAME
+
 logger = logging.getLogger(__name__)
 
 
 class ThreatHuntingEngine:
     """
-    Offline / periodic threat hunting against the SIEM SQLite database.
+    Offline / periodic threat hunting against the SIEM MongoDB Atlas database.
     Call `run_all_hunts()` to execute the full sweep.
     """
 
-    # Beaconing: standard deviation of inter-arrival seconds must be < this threshold
     BEACON_JITTER_THRESHOLD_SECONDS = 30.0
-    # Minimum occurrences to call something a beacon
     BEACON_MIN_HITS = 5
-    # Low-and-slow: events spread > this many minutes qualify
     LOW_SLOW_MIN_SPREAD_MINUTES = 30
     LOW_SLOW_MAX_EVENTS_PER_HOUR = 3
-    # Stealth scan: unique ports < threshold but spread over many minutes
     STEALTH_PORT_THRESHOLD = 10
     STEALTH_SPREAD_MINUTES = 45
 
-    def __init__(self, db_path: str = "data/cns.db"):
-        self.db_path = Path(db_path)
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Public API
-    # ──────────────────────────────────────────────────────────────────────────
+    def __init__(self, mongo_url: str = None, db_name: str = None):
+        self.mongo_url = mongo_url or MONGODB_URL
+        self.db_name = db_name or DATABASE_NAME
+        self.storage = get_storage()
 
     def run_all_hunts(self, lookback_hours: int = 24) -> List[Dict]:
-        """
-        Execute all hunt scenarios against the last `lookback_hours` of logs.
-        Persists results and returns list of hunt_result dicts.
-        """
         logs_df = self._load_raw_logs(lookback_hours)
         if logs_df.empty:
             logger.info("No logs available for threat hunting")
@@ -66,7 +57,6 @@ class ThreatHuntingEngine:
 
         results: List[Dict] = []
 
-        # Build attack graph first – used by multiple hunts
         attack_graph = self.build_attack_graph(logs_df)
 
         results += self._hunt_lateral_movement(logs_df, attack_graph)
@@ -81,15 +71,6 @@ class ThreatHuntingEngine:
         return results
 
     def build_attack_graph(self, logs_df: pd.DataFrame) -> nx.DiGraph:
-        """
-        Construct a directed attack graph from raw log rows.
-
-        Nodes : IP addresses (prefixed src_ / dst_ to distinguish roles)
-        Edges : (src_ip, dst_ip) with edge attributes:
-                  ports      – set of destination ports seen
-                  timestamps – list of ISO timestamps
-                  protocols  – set of protocols
-        """
         G = nx.DiGraph()
 
         if logs_df.empty:
@@ -126,9 +107,7 @@ class ThreatHuntingEngine:
         return G
 
     def get_graph_json(self, G: nx.DiGraph) -> Dict:
-        """Serialize the attack graph for storage / API response."""
         data = nx.node_link_data(G)
-        # Convert sets to lists for JSON serialisation
         for link in data.get("links", []):
             if "ports" in link:
                 link["ports"] = list(link["ports"])
@@ -136,37 +115,19 @@ class ThreatHuntingEngine:
                 link["protocols"] = list(link["protocols"])
         return data
 
-    def get_recent_hunt_results(self, limit: int = 50) -> List[Dict]:
-        """Retrieve recent hunt results from the DB."""
+    async def get_recent_hunt_results(self, limit: int = 50) -> List[Dict]:
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT * FROM hunt_results ORDER BY detected_at DESC LIMIT ?",
-                (limit,),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-            conn.close()
-            return rows
+            collection = self.storage.db["hunt_results"]
+            cursor = collection.find().sort("detected_at", -1).limit(limit)
+            results = await cursor.to_list(length=limit)
+            return [r.pop("_id", None) or r for r in results]
         except Exception as exc:
             logger.warning(f"Failed to load hunt results: {exc}")
             return []
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Hunt scenarios
-    # ──────────────────────────────────────────────────────────────────────────
-
     def _hunt_lateral_movement(
         self, logs_df: pd.DataFrame, G: nx.DiGraph
     ) -> List[Dict]:
-        """
-        Detect lateral movement: an IP that is both a source AND a destination
-        in the attack graph (multi-hop pivoting).
-
-        A node that appears as both source and destination with high in-degree
-        AND out-degree is a candidate pivot host.
-        """
         results = []
         if G.number_of_nodes() == 0:
             return results
@@ -175,7 +136,6 @@ class ThreatHuntingEngine:
             in_deg = G.in_degree(node)
             out_deg = G.out_degree(node)
             if in_deg >= 1 and out_deg >= 1:
-                # Build path: predecessors → node → successors
                 predecessors = list(G.predecessors(node))
                 successors = list(G.successors(node))
                 confidence = min(1.0, (in_deg + out_deg) / 10.0)
@@ -200,11 +160,6 @@ class ThreatHuntingEngine:
         return results
 
     def _hunt_beaconing(self, logs_df: pd.DataFrame) -> List[Dict]:
-        """
-        Detect beaconing: regular-interval connections from a src_ip to a
-        fixed dst_ip.  Uses inter-arrival time standard deviation as jitter.
-        Low jitter = automated beacon.
-        """
         results = []
         if logs_df.empty or "timestamp" not in logs_df.columns:
             return results
@@ -247,10 +202,6 @@ class ThreatHuntingEngine:
         return results
 
     def _hunt_low_and_slow(self, logs_df: pd.DataFrame) -> List[Dict]:
-        """
-        Detect low-and-slow attacks: src_ip with very few events/hour but
-        spread over a long total time window.
-        """
         results = []
         if logs_df.empty or "timestamp" not in logs_df.columns:
             return results
@@ -264,7 +215,7 @@ class ThreatHuntingEngine:
                 continue
             total_span = (
                 grp["timestamp"].max() - grp["timestamp"].min()
-            ).total_seconds() / 60.0  # minutes
+            ).total_seconds() / 60.0
 
             if total_span < self.LOW_SLOW_MIN_SPREAD_MINUTES:
                 continue
@@ -297,10 +248,6 @@ class ThreatHuntingEngine:
         return results
 
     def _hunt_stealth_scans(self, logs_df: pd.DataFrame) -> List[Dict]:
-        """
-        Detect stealth scans: source probing a small number of unique ports
-        (< threshold) spread over a long time window (signature of slow scan).
-        """
         results = []
         if logs_df.empty or "timestamp" not in logs_df.columns:
             return results
@@ -345,10 +292,6 @@ class ThreatHuntingEngine:
         logger.info(f"Stealth scan hunt: {len(results)} findings")
         return results
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Utility
-    # ──────────────────────────────────────────────────────────────────────────
-
     def _make_result(
         self,
         hunt_type: str,
@@ -368,46 +311,55 @@ class ThreatHuntingEngine:
         }
 
     def _load_raw_logs(self, lookback_hours: int) -> pd.DataFrame:
-        """Load raw_logs from SIEM DB for the last N hours."""
-        if not self.db_path.exists():
-            return pd.DataFrame()
-        try:
+        import asyncio
+
+        async def _fetch():
             cutoff = (
                 datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
             ).isoformat()
-            conn = sqlite3.connect(str(self.db_path))
-            df = pd.read_sql_query(
-                "SELECT * FROM raw_logs WHERE timestamp >= ?",
-                conn,
-                params=(cutoff,),
-            )
-            conn.close()
-            return df
+            try:
+                collection = self.storage.db["ids_events"]
+                query = {"timestamp": {"$gte": cutoff}}
+                cursor = collection.find(query).sort("timestamp", -1).limit(10000)
+                events = await cursor.to_list(length=10000)
+                return pd.DataFrame(events)
+            except Exception as exc:
+                logger.warning(f"Failed to load raw logs for hunting: {exc}")
+                return pd.DataFrame()
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, _fetch())
+                    return future.result()
+            else:
+                return asyncio.run(_fetch())
         except Exception as exc:
             logger.warning(f"Failed to load raw logs for hunting: {exc}")
             return pd.DataFrame()
 
-    def _persist_hunt_result(self, result: Dict) -> None:
+    async def _persist_hunt_result_async(self, result: Dict) -> None:
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO hunt_results
-                (id, hunt_type, src_ip, dst_ip, details, detected_at, confidence)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    result["id"],
-                    result["hunt_type"],
-                    result["src_ip"],
-                    result["dst_ip"],
-                    result["details"],
-                    result["detected_at"],
-                    result["confidence"],
-                ),
+            collection = self.storage.db["hunt_results"]
+            await collection.replace_one(
+                {"id": result["id"]},
+                result,
+                upsert=True,
             )
-            conn.commit()
-            conn.close()
         except Exception as exc:
             logger.warning(f"Failed to persist hunt result: {exc}")
+
+    def _persist_hunt_result(self, result: Dict) -> None:
+        try:
+            import asyncio
+
+            asyncio.run(self._persist_hunt_result_async(result))
+        except Exception as exc:
+            logger.warning(f"Failed to persist hunt result: {exc}")
+
+
+def get_threat_hunting_engine() -> ThreatHuntingEngine:
+    return ThreatHuntingEngine()
