@@ -141,7 +141,7 @@ class SIEMPipeline:
             from siem.storage import SIEMStorage
 
             self._storage = SIEMStorage()
-            logger.info(f"[PIPELINE] Storage initialized ({self._storage._es_mode})")
+            logger.info("[PIPELINE] Storage initialized (MongoDB)")
         except Exception as e:
             logger.warning(f"[PIPELINE] Storage init failed: {e}")
 
@@ -186,19 +186,14 @@ class SIEMPipeline:
             except Exception as e:
                 logger.error(f"[PIPELINE] ML scoring error: {e}")
 
-        # Store to PostgreSQL/SQLite
-        if self._storage and self._storage._pg_mode in ["live", "stub"]:
+        # Store to MongoDB
+        if self._storage and self._storage._connected:
             try:
-                self._store_to_postgres(siem_event)
+                asyncio.create_task(
+                    self._storage.ingest_ids_event(siem_event.to_dict())
+                )
             except Exception as e:
-                logger.error(f"[PIPELINE] PostgreSQL store error: {e}")
-
-        # Index to Elasticsearch
-        if self._storage and self._storage._es_mode == "live":
-            try:
-                self._storage.ingest_ids_event(siem_event.to_elasticsearch())
-            except Exception as e:
-                logger.error(f"[PIPELINE] ES index error: {e}")
+                logger.error(f"[PIPELINE] MongoDB store error: {e}")
 
         # Broadcast to WebSocket for frontend
         if self._ws_manager and (
