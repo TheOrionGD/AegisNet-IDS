@@ -55,9 +55,7 @@ dist-ssr/
 .turbo
 
 # --- Secret / Environment Variables ---
-.env
-.env.local
-.env.*.local
+
 *.local
 *.pem
 *.key

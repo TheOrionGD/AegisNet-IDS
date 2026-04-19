@@ -5,6 +5,7 @@ import uuid
 import subprocess
 import threading
 import ipaddress
+import platform
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List, Protocol
 from abc import ABC, abstractmethod
@@ -38,6 +39,18 @@ class IPTablesDriver(FirewallDriver):
     def rate_limit_ip(self, ip: str) -> List[str]:
         return [f"iptables -I INPUT 1 -s {ip} -m limit --limit 10/min -j ACCEPT"]
 
+class WindowsNetshDriver(FirewallDriver):
+    """Windows netsh advfirewall driver implementation."""
+    def block_ip(self, ip: str) -> List[str]:
+        # Add a block rule with a unique name
+        return [f"netsh advfirewall firewall add rule name=\"CNS-Block-{ip}\" dir=in action=block remoteip={ip}"]
+
+    def rate_limit_ip(self, ip: str) -> List[str]:
+        # Windows netsh doesn't support native rate limiting similarly to iptables.
+        # We fallback to blocking but log a warning.
+        logger.warning(f"Windows netsh does not support native rate limiting for {ip}. Falling back to BLOCK.")
+        return self.block_ip(ip)
+
 class ResponseEngine:
     """
     Hardened SOAR (Security Orchestration, Automation, and Response) Engine.
@@ -46,7 +59,14 @@ class ResponseEngine:
     def __init__(self, storage: SIEMStorage, driver: Optional[FirewallDriver] = None):
         self.storage = storage
         self.config = load_config('config/config.yaml')
-        self.driver = driver or IPTablesDriver()
+        
+        if driver:
+            self.driver = driver
+        else:
+            if platform.system() == "Windows":
+                self.driver = WindowsNetshDriver()
+            else:
+                self.driver = IPTablesDriver()
         
         # Operational Guards
         self.safe_mode = self.config.get('soar', {}).get('safe_mode', True)

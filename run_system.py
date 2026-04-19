@@ -95,6 +95,10 @@ class SystemOrchestrator:
         logger.warning(f"Process {name} crashed, restarting...")
         # Define commands based on name
         if name == "SIEM API":
+            if self.is_port_in_use(self.api_port):
+                logger.info(f"Port {self.api_port} still in use, waiting before restarting API...")
+                if not self.wait_for_port_free(self.api_port, timeout=10, delay=1):
+                    logger.warning(f"Port {self.api_port} still busy after waiting; attempting restart anyway.")
             command = [self.python_exe, "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", str(self.api_port)]
             cwd = self.root_dir / "back-end"
         elif name == "Analysis Worker":
@@ -132,7 +136,16 @@ class SystemOrchestrator:
         except Exception:
             return False
 
-    def check_api_health(self, retries=10, delay=2):
+    def wait_for_port_free(self, port, timeout=10, delay=1):
+        """Waits until a local port is free or a timeout expires."""
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            if not self.is_port_in_use(port):
+                return True
+            time.sleep(delay)
+        return False
+
+    def check_api_health(self, retries=30, delay=3):
         """Check if API is healthy."""
         for _ in range(retries):
             try:
@@ -169,14 +182,18 @@ class SystemOrchestrator:
         self.api_port = api_port
 
         # 1. API + Dashboard Server
+        if self.is_port_in_use(self.api_port):
+            logger.info(f"Port {self.api_port} still in use, waiting before starting API...")
+            if not self.wait_for_port_free(self.api_port, timeout=10, delay=1):
+                logger.warning(f"Port {self.api_port} still busy after waiting; attempting startup anyway.")
         self.start_process(
             "SIEM API",
             [self.python_exe, "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", str(self.api_port)],
             cwd=self.root_dir / "back-end",
             log_file="api.log"
         )
-        # Wait for API to be healthy
-        if not self.check_api_health():
+        # Wait for API to be healthy (increase timeout for database fallback)
+        if not self.check_api_health(retries=60, delay=3):
             logger.error("API failed to start healthily. Aborting boot.")
             sys.exit(1)
 

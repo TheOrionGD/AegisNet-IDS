@@ -22,9 +22,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Initialize Infrastructure on Startup with Retry Logic
-def verify_infrastructure(max_retries=15, delay=3):
+def verify_infrastructure(max_retries=3, delay=1):
     """Ensures all backend services (Postgres, Redis, ES) are reachable."""
+    # First, try to get engine with current config (may be PostgreSQL from .env)
     engine = get_engine()
+    logger.info(f"[STARTUP] Initial engine URL: {engine.url}")
     db_ready = False
     
     # 1. Database (PostgreSQL or fallback SQLite)
@@ -36,17 +38,20 @@ def verify_infrastructure(max_retries=15, delay=3):
             break
         except Exception as e:
             if i < max_retries - 1:
-                logger.warning(f"[STARTUP] Database not ready ({i+1}/{max_retries}), retrying in {delay}s...")
+                logger.warning(f"[STARTUP] Database not ready ({i+1}/3), retrying in 1s...")
                 time.sleep(delay)
             else:
                 logger.error("[STARTUP] Could not connect to database.")
-                database_url = get_engine().url
+                database_url = engine.url  # Use the engine we already have
+                logger.info(f"[STARTUP] Current database URL: {database_url}")
                 if database_url.drivername.startswith('postgresql'):
                     fallback_path = Path(__file__).resolve().parents[1] / 'data' / 'siem.db'
-                    fallback_url = f"sqlite:///{fallback_path.as_posix()}"
-                    os.environ['DATABASE_URL'] = fallback_url
+                    # Create SQLite engine directly
+                    from sqlalchemy import create_engine
+                    sqlite_url = f"sqlite:///{fallback_path.as_posix()}"
+                    engine = create_engine(sqlite_url)
                     logger.warning(f"[STARTUP] Falling back to local SQLite database at {fallback_path}.")
-                    engine = get_engine()
+                    logger.info(f"[STARTUP] Created SQLite engine: {engine.url}")
                     Base.metadata.create_all(bind=engine)
                     logger.info("[STARTUP] Local SQLite database initialized.")
                     db_ready = True
